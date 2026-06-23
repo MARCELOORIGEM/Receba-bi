@@ -6,6 +6,7 @@ const state = {
   finance: null,
   user: null,
   pendingFirstAccessEmail: "",
+  pendingForgotEmail: "",
   tableSort: {
     hotzones: { key: "city", direction: "asc" },
     drivers: { key: "city", direction: "asc" },
@@ -14,7 +15,6 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const DEFAULT_PASSWORD = "RECEBA99";
 const SESSION_KEY = "receba:activeSession";
 const FULL_ACCESS_EMAIL = "recebapoder2026@gmail.com";
 const ALLOWED_USERS = [
@@ -47,23 +47,6 @@ function normalizeEmail(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-function userKey(email) {
-  return `receba:user:${email}`;
-}
-
-function getStoredUser(email) {
-  const raw = localStorage.getItem(userKey(email));
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredUser(email, data) {
-  localStorage.setItem(userKey(email), JSON.stringify(data));
-}
 
 function getActiveSession() {
   const raw = localStorage.getItem(SESSION_KEY);
@@ -105,7 +88,7 @@ function setPasswordMessage(message, ok = false) {
 
 function showFirstAccess(email) {
   state.pendingFirstAccessEmail = email;
-  $("loginForm").classList.add("hidden");
+  ["loginForm", "forgotForm", "resetForm"].forEach((id) => $( id).classList.add("hidden"));
   $("firstAccessForm").classList.remove("hidden");
   $("newPassword").value = "";
   $("confirmPassword").value = "";
@@ -115,11 +98,41 @@ function showFirstAccess(email) {
 
 function showLogin() {
   state.pendingFirstAccessEmail = "";
-  $("firstAccessForm").classList.add("hidden");
+  state.pendingForgotEmail = "";
+  ["firstAccessForm", "forgotForm", "resetForm"].forEach((id) => $(id).classList.add("hidden"));
   $("loginForm").classList.remove("hidden");
   $("loginPassword").value = "";
   document.querySelector(".finance-link").classList.add("hidden");
   setLoginMessage("");
+}
+
+function setForgotMessage(message, ok = false) {
+  $("forgotMessage").textContent = message;
+  $("forgotMessage").classList.toggle("ok", ok);
+}
+
+function setResetMessage(message, ok = false) {
+  $("resetMessage").textContent = message;
+  $("resetMessage").classList.toggle("ok", ok);
+}
+
+function showForgotForm() {
+  ["loginForm", "firstAccessForm", "resetForm"].forEach((id) => $(id).classList.add("hidden"));
+  $("forgotForm").classList.remove("hidden");
+  $("forgotEmail").value = "";
+  setForgotMessage("");
+  $("forgotEmail").focus();
+}
+
+function showResetForm(email) {
+  state.pendingForgotEmail = email;
+  ["loginForm", "firstAccessForm", "forgotForm"].forEach((id) => $(id).classList.add("hidden"));
+  $("resetForm").classList.remove("hidden");
+  $("resetCode").value = "";
+  $("resetPassword").value = "";
+  $("resetConfirm").value = "";
+  setResetMessage("");
+  $("resetCode").focus();
 }
 
 function applyUserAccess() {
@@ -137,17 +150,13 @@ function openApp(user) {
   setOperationalPage("kpis");
 }
 
-function validateLogin(email, password) {
-  if (!isAllowedEmail(email)) return { ok: false, message: "Email sem acesso liberado." };
-
-  const stored = getStoredUser(email);
-  if (stored?.password) {
-    if (password !== stored.password) return { ok: false, message: "Senha incorreta." };
-    return { ok: true };
-  }
-
-  if (password !== DEFAULT_PASSWORD) return { ok: false, message: "Use a senha padrao recebida ou a senha cadastrada." };
-  return { ok: true, firstAccess: true };
+async function validateLogin(email, password) {
+  const response = await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  return response.json();
 }
 
 function queryParams() {
@@ -739,53 +748,118 @@ document.addEventListener("click", () => {
   document.querySelectorAll(".search-select.open").forEach((select) => select.classList.remove("open"));
 });
 
-$("loginForm").addEventListener("submit", (event) => {
+$("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const email = normalizeEmail($("loginUser").value);
   const password = $("loginPassword").value;
-  const result = validateLogin(email, password);
+  const btn = $("loginForm").querySelector(".login-submit");
+  btn.disabled = true;
 
-  if (!result.ok) {
-    setLoginMessage(result.message);
-    return;
+  try {
+    const result = await validateLogin(email, password);
+    if (!result.ok) { setLoginMessage(result.message); return; }
+    if (result.firstAccess) { showFirstAccess(email); return; }
+    openApp({ email });
+  } catch {
+    setLoginMessage("Erro de conexao. Tente novamente.");
+  } finally {
+    btn.disabled = false;
   }
-
-  if (result.firstAccess) {
-    showFirstAccess(email);
-    return;
-  }
-
-  openApp({ email });
 });
 
-$("firstAccessForm").addEventListener("submit", (event) => {
+$("firstAccessForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const email = state.pendingFirstAccessEmail;
   const newPassword = $("newPassword").value;
   const confirmPassword = $("confirmPassword").value;
 
-  if (newPassword.length < 6) {
-    setPasswordMessage("A nova senha precisa ter pelo menos 6 caracteres.");
-    return;
-  }
+  if (newPassword !== confirmPassword) { setPasswordMessage("As senhas nao conferem."); return; }
 
-  if (newPassword === DEFAULT_PASSWORD) {
-    setPasswordMessage("Escolha uma senha diferente da senha padrao.");
-    return;
-  }
+  const btn = $("firstAccessForm").querySelector(".login-submit");
+  btn.disabled = true;
 
-  if (newPassword !== confirmPassword) {
-    setPasswordMessage("As senhas nao conferem.");
-    return;
-  }
+  try {
+    const result = await fetch("/api/set-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: newPassword }),
+    }).then((r) => r.json());
 
-  saveStoredUser(email, { password: newPassword, changedAt: new Date().toISOString() });
-  setPasswordMessage("Senha salva com sucesso.", true);
-  openApp({ email });
+    if (!result.ok) { setPasswordMessage(result.message); return; }
+    setPasswordMessage("Senha salva com sucesso.", true);
+    openApp({ email });
+  } catch {
+    setPasswordMessage("Erro de conexao. Tente novamente.");
+  } finally {
+    btn.disabled = false;
+  }
 });
 
-$("cancelFirstAccess").addEventListener("click", () => {
-  showLogin();
+$("skipFirstAccess").addEventListener("click", () => { openApp({ email: state.pendingFirstAccessEmail }); });
+$("cancelFirstAccess").addEventListener("click", () => { showLogin(); });
+
+document.querySelector(".forgot-link").addEventListener("click", (event) => {
+  event.preventDefault();
+  showForgotForm();
+});
+
+$("cancelForgot").addEventListener("click", () => { showLogin(); });
+
+$("forgotForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const email = normalizeEmail($("forgotEmail").value);
+  if (!email) { setForgotMessage("Digite seu email."); return; }
+
+  const btn = $("forgotForm").querySelector(".login-submit");
+  btn.disabled = true;
+  btn.textContent = "ENVIANDO...";
+
+  try {
+    const result = await fetch("/api/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    }).then((r) => r.json());
+
+    if (!result.ok) { setForgotMessage(result.message || "Erro ao enviar email."); return; }
+    showResetForm(email);
+  } catch {
+    setForgotMessage("Erro de conexao. Tente novamente.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "ENVIAR CODIGO";
+  }
+});
+
+$("cancelReset").addEventListener("click", () => { showLogin(); });
+
+$("resetForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const email = state.pendingForgotEmail;
+  const code = $("resetCode").value.trim();
+  const password = $("resetPassword").value;
+  const confirm = $("resetConfirm").value;
+
+  if (password !== confirm) { setResetMessage("As senhas nao conferem."); return; }
+
+  const btn = $("resetForm").querySelector(".login-submit");
+  btn.disabled = true;
+
+  try {
+    const result = await fetch("/api/verify-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, code, password }),
+    }).then((r) => r.json());
+
+    if (!result.ok) { setResetMessage(result.message); return; }
+    setResetMessage("Senha redefinida com sucesso!", true);
+    setTimeout(() => openApp({ email }), 1000);
+  } catch {
+    setResetMessage("Erro de conexao. Tente novamente.");
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 $("logoutButton").addEventListener("click", () => {

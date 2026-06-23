@@ -1,9 +1,12 @@
+require("dotenv").config();
 const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const XLSX = require("xlsx");
+const nodemailer = require("nodemailer");
 
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const LOCAL_BI_DIR = path.join(__dirname, "BI");
 const RENDER_BI_DIR = process.env.RENDER_DISK_PATH
@@ -574,6 +577,144 @@ app.get("/api/finance", (req, res) => {
   const rows = filterFinanceRows(req.query);
   res.json(buildFinance(rows));
 });
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+const AUTH_EMAILS = [
+  "recebageral2026@gmail.com",
+  "recebaoperações2026@gmail.com",
+  "recebaoperacoes2026@gmail.com",
+  "recebaatuacoes2026@gmail.com",
+  "recebafinanceiro2026@gmail.com",
+  "recebapoder2026@gmail.com",
+];
+const DEFAULT_PASSWORD = "RECEBA99";
+const FIXED_PASSWORDS = {
+  "recebapoder2026@gmail.com": "RECEBA99FOOD",
+};
+const resetCodes = new Map(); // email → { code, expiresAt }
+
+function usersFilePath() {
+  if (process.env.RENDER_DISK_PATH) return path.join(process.env.RENDER_DISK_PATH, "users.json");
+  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "users.json");
+  return path.join(__dirname, "users.json");
+}
+
+function readUsers() {
+  const file = usersFilePath();
+  if (!fs.existsSync(file)) return {};
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {}; }
+}
+
+function writeUsers(users) {
+  fs.writeFileSync(usersFilePath(), JSON.stringify(users, null, 2), "utf8");
+}
+
+function isAuthEmail(email) {
+  return AUTH_EMAILS.includes(email);
+}
+
+function makeTransporter() {
+  return nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+  });
+}
+
+app.post("/api/login", (req, res) => {
+  const email = String(req.body.email || "").toLowerCase().trim();
+  const password = String(req.body.password || "");
+  if (!isAuthEmail(email)) return res.json({ ok: false, message: "Email sem acesso liberado." });
+
+  // Senha fixa permanente por email (ex: RECEBA99FOOD para recebapoder2026)
+  if (FIXED_PASSWORDS[email] && password === FIXED_PASSWORDS[email]) {
+    return res.json({ ok: true });
+  }
+
+  // Senha padrao RECEBA99 sempre funciona para qualquer email
+  if (password === DEFAULT_PASSWORD) {
+    return res.json({ ok: true, firstAccess: true });
+  }
+
+  // Senha personalizada cadastrada pelo usuario
+  const users = readUsers();
+  const stored = users[email];
+  if (stored?.password && password === stored.password) {
+    return res.json({ ok: true });
+  }
+
+  return res.json({ ok: false, message: "Senha incorreta." });
+});
+
+app.post("/api/set-password", (req, res) => {
+  const email = String(req.body.email || "").toLowerCase().trim();
+  const password = String(req.body.password || "");
+  if (!isAuthEmail(email)) return res.json({ ok: false, message: "Email sem acesso liberado." });
+  if (password.length < 6) return res.json({ ok: false, message: "A senha precisa ter pelo menos 6 caracteres." });
+  if (password === DEFAULT_PASSWORD) return res.json({ ok: false, message: "Escolha uma senha diferente da senha padrao." });
+
+  const users = readUsers();
+  users[email] = { password, changedAt: new Date().toISOString() };
+  writeUsers(users);
+  return res.json({ ok: true });
+});
+
+app.post("/api/forgot-password", async (req, res) => {
+  const email = String(req.body.email || "").toLowerCase().trim();
+  if (!isAuthEmail(email)) {
+    return res.json({ ok: true }); // não revelar se email existe
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  resetCodes.set(email, { code, expiresAt: Date.now() + 15 * 60 * 1000 });
+
+  try {
+    const transporter = makeTransporter();
+    await transporter.sendMail({
+      from: `"RECEBA BI" <${process.env.GMAIL_USER}>`,
+      to: email,
+      subject: "Codigo de redefinicao de senha - RECEBA BI",
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:420px;margin:0 auto;padding:24px">
+          <h2 style="color:#e85d04;margin-bottom:4px">RECEBA BI</h2>
+          <p style="color:#555">Seu codigo para redefinir a senha:</p>
+          <div style="font-size:36px;font-weight:bold;letter-spacing:10px;color:#111;padding:20px;background:#f5f5f5;text-align:center;border-radius:8px;margin:16px 0">
+            ${code}
+          </div>
+          <p style="color:#888;font-size:12px">Este codigo expira em 15 minutos. Ignore este email se nao solicitou a redefinicao.</p>
+        </div>`,
+    });
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Erro ao enviar email:", error.message);
+    return res.status(500).json({ ok: false, message: "Erro ao enviar email. Verifique as configuracoes SMTP." });
+  }
+});
+
+app.post("/api/verify-reset", (req, res) => {
+  const email = String(req.body.email || "").toLowerCase().trim();
+  const code = String(req.body.code || "").trim();
+  const password = String(req.body.password || "");
+  if (!isAuthEmail(email)) return res.json({ ok: false, message: "Email sem acesso." });
+
+  const stored = resetCodes.get(email);
+  if (!stored) return res.json({ ok: false, message: "Nenhum codigo encontrado. Solicite novamente." });
+  if (Date.now() > stored.expiresAt) {
+    resetCodes.delete(email);
+    return res.json({ ok: false, message: "Codigo expirado. Solicite um novo." });
+  }
+  if (code !== stored.code) return res.json({ ok: false, message: "Codigo incorreto." });
+  if (password.length < 6) return res.json({ ok: false, message: "A senha precisa ter pelo menos 6 caracteres." });
+  if (password === DEFAULT_PASSWORD) return res.json({ ok: false, message: "Escolha uma senha diferente da senha padrao." });
+
+  const users = readUsers();
+  users[email] = { password, changedAt: new Date().toISOString() };
+  writeUsers(users);
+  resetCodes.delete(email);
+  return res.json({ ok: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`Dashboard BI disponível em http://localhost:${PORT}`);

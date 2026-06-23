@@ -55,13 +55,34 @@
         </form>
 
         <form id="firstAccessForm" class="first-access hidden">
-          <h2>Crie uma nova senha</h2>
-          <p>Esse usuario entrou com a senha padrao. Para continuar, cadastre uma senha propria.</p>
+          <h2>Definir senha pessoal</h2>
+          <p>Voce acessou com a senha padrao RECEBA99. Deseja cadastrar uma senha pessoal? (opcional)</p>
           <label>Nova senha<input id="newPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" /></label>
           <label>Confirmar senha<input id="confirmPassword" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" /></label>
           <div class="login-message" id="passwordMessage"></div>
           <button class="login-submit" type="submit">SALVAR SENHA</button>
+          <button id="skipFirstAccess" class="ghost-login" type="button">Acessar sem alterar</button>
           <button id="cancelFirstAccess" class="ghost-login" type="button">Voltar ao login</button>
+        </form>
+
+        <form id="forgotForm" class="first-access hidden">
+          <h2>Esqueci minha senha</h2>
+          <p>Digite seu email e enviaremos um codigo para voce redefinir a senha.</p>
+          <label>Email<input id="forgotEmail" type="text" inputmode="email" placeholder="Digite seu email" autocomplete="username" /></label>
+          <div class="login-message" id="forgotMessage"></div>
+          <button class="login-submit" type="submit">ENVIAR CODIGO</button>
+          <button id="cancelForgot" class="ghost-login" type="button">Voltar ao login</button>
+        </form>
+
+        <form id="resetForm" class="first-access hidden">
+          <h2>Redefinir senha</h2>
+          <p>Digite o codigo enviado para o seu email e escolha uma nova senha.</p>
+          <label>Codigo<input id="resetCode" type="text" inputmode="numeric" placeholder="000000" maxlength="6" autocomplete="one-time-code" /></label>
+          <label>Nova senha<input id="resetPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" /></label>
+          <label>Confirmar senha<input id="resetConfirm" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" /></label>
+          <div class="login-message" id="resetMessage"></div>
+          <button class="login-submit" type="submit">REDEFINIR SENHA</button>
+          <button id="cancelReset" class="ghost-login" type="button">Voltar ao login</button>
         </form>
 
         <div class="login-card-footer">Receba Logistica - 2026</div>
