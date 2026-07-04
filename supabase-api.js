@@ -268,6 +268,18 @@ function createSupabaseApi() {
     res.json({ user: data });
   });
 
+  router.post("/users/:id/reset-password", authenticate, requireAdmin, async (req, res) => {
+    const { data: existing, error: fetchError } = await admin.auth.admin.getUserById(req.params.id);
+    if (fetchError || !existing?.user) return res.status(404).json({ error: "Usuario nao encontrado." });
+
+    const { error } = await admin.auth.admin.updateUserById(req.params.id, {
+      password: DEFAULT_PASSWORD,
+      user_metadata: { ...existing.user.user_metadata, must_change_password: true },
+    });
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ ok: true, password: DEFAULT_PASSWORD });
+  });
+
   router.delete("/users/:id", authenticate, requireAdmin, async (req, res) => {
     if (req.params.id === req.authUser.id) return res.status(400).json({ error: "Voce nao pode excluir o proprio usuario." });
     const { error } = await admin.auth.admin.deleteUser(req.params.id);

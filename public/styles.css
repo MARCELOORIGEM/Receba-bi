@@ -1784,6 +1784,7 @@ th.num { text-align: center; }
 }
 
 .user-actions .allow-all { color: var(--green); }
+.user-actions .reset-password { color: #6fb7ff; }
 .user-actions .block-user { color: var(--orange-2); }
 .user-actions .delete-user {
   margin-left: auto;

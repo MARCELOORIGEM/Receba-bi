@@ -1,3 +1,5 @@
+const DEFAULT_PASSWORD = "RECEBA99";
+
 const state = {
   view: "operacional",
   opPage: "kpis",
@@ -238,6 +240,7 @@ async function loadAuthConfig() {
     state.supabaseEnabled = Boolean(config.enabled);
     $("supabaseStatus").textContent = config.enabled ? "Supabase conectado" : "Supabase nao configurado";
     $("supabaseStatus").classList.toggle("offline", !config.enabled);
+    document.querySelector(".forgot-link").classList.toggle("hidden", config.enabled);
   } catch {
     state.supabaseEnabled = false;
   }
@@ -703,6 +706,7 @@ function renderUsers() {
         <div class="user-card-details">
           <div class="user-actions">
             <button class="allow-all" type="button">Liberar tudo</button>
+            <button class="reset-password" type="button">Redefinir senha</button>
             <button class="block-user" type="button">${user.active ? "Bloquear usuario" : "Ativar usuario"}</button>
             <button class="delete-user" type="button">Excluir usuario</button>
           </div>
@@ -756,6 +760,13 @@ function bindUsersEvents() {
           accessArea: "ambos",
           permissions: Object.fromEntries(Object.keys(permissionLabels).map((key) => [key, true])),
         });
+        return;
+      }
+      if (event.target.closest(".reset-password")) {
+        const user = state.users.find((item) => item.id === card.dataset.userId);
+        if (!window.confirm(`Redefinir a senha de ${user.name || user.email} para a senha padrao?`)) return;
+        const data = await authJson(`/api/auth/users/${card.dataset.userId}/reset-password`, { method: "POST" });
+        setUsersMessage(`Senha redefinida para ${data.password}. O usuario devera trocar no proximo login.`, true);
         return;
       }
       if (event.target.closest(".delete-user")) {
