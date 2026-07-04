@@ -4,6 +4,7 @@ const fs = require("fs");
 const express = require("express");
 const XLSX = require("xlsx");
 const nodemailer = require("nodemailer");
+const { createSupabaseApi } = require("./supabase-api");
 
 const app = express();
 app.use(express.json());
@@ -25,6 +26,7 @@ function configuredBiDir() {
 
 const BI_DIR = configuredBiDir();
 const FINANCE_DIR = path.join(BI_DIR, "FINANCEIRO");
+const supabase = createSupabaseApi();
 
 const cityOrder = ["SAO PAULO", "GOIANIA", "CURITIBA", "RIO DE JANEIRO"];
 
@@ -534,6 +536,7 @@ function buildFinance(rows) {
   };
 }
 
+app.use("/api/auth", supabase.router);
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/meta", (_req, res) => {
@@ -556,7 +559,7 @@ app.get("/api/meta", (_req, res) => {
   });
 });
 
-app.post("/api/reload", (_req, res) => {
+app.post("/api/reload", supabase.authorize("atualizar_bi"), (_req, res) => {
   reloadData();
   res.json({
     ok: true,
@@ -568,12 +571,12 @@ app.post("/api/reload", (_req, res) => {
   });
 });
 
-app.get("/api/dashboard", (req, res) => {
+app.get("/api/dashboard", supabase.authorize("kpis", "cadastro"), (req, res) => {
   const rows = filterRows(req.query);
   res.json(buildDashboard(rows));
 });
 
-app.get("/api/finance", (req, res) => {
+app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
   const rows = filterFinanceRows(req.query);
   res.json(buildFinance(rows));
 });

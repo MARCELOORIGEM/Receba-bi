@@ -110,6 +110,10 @@
             <span class="dot green"></span>
             Dash Financeiro
           </button>
+          <button class="side-link users-link hidden" data-view="usuarios">
+            <span class="user-icon"></span>
+            Usuarios
+          </button>
         </nav>
 
         <div class="sidebar-footer">
@@ -248,6 +252,50 @@
               </div>
               <div class="table-wrap tall"><table id="financeDriverTable"></table></div>
             </section>
+          </section>
+
+          <section id="usuarios" class="view">
+            <section class="user-create-panel">
+              <div class="users-heading">
+                <div>
+                  <span class="eyebrow">ADMINISTRACAO</span>
+                  <h2>Gerenciar Usuarios</h2>
+                  <p>Crie acessos e controle o que cada pessoa pode visualizar.</p>
+                </div>
+                <span class="supabase-badge" id="supabaseStatus">Supabase</span>
+              </div>
+
+              <form id="createUserForm" class="user-create-form">
+                <label>Nome<input id="newUserName" type="text" placeholder="Nome completo" required /></label>
+                <label>E-mail<input id="newUserEmail" type="text" inputmode="email" placeholder="usuario@receba.com.br" required /></label>
+                <label>Senha<input id="newUserPassword" type="password" value="RECEBA99" placeholder="Senha inicial" required /></label>
+                <label>Area
+                  <select id="newUserAccess">
+                    <option value="operacional">Operacional</option>
+                    <option value="financeiro">Financeiro</option>
+                    <option value="ambos">Ambos</option>
+                  </select>
+                </label>
+                <label>Perfil
+                  <select id="newUserRole">
+                    <option value="usuario">Usuario</option>
+                    <option value="admin">Administrador</option>
+                  </select>
+                </label>
+                <button class="create-user-button" type="submit">+ Criar usuario</button>
+              </form>
+              <div class="users-message" id="usersMessage"></div>
+            </section>
+
+            <section class="users-toolbar">
+              <div>
+                <strong id="usersCount">0 usuarios</strong>
+                <span>Perfis cadastrados no Supabase</span>
+              </div>
+              <button id="reloadUsersButton" type="button">Atualizar lista</button>
+            </section>
+
+            <section class="users-list" id="usersList"></section>
           </section>
         </main>
       </section>

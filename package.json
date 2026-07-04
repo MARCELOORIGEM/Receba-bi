@@ -4,21 +4,21 @@
   "description": "Dashboards operacional e financeiro para a pasta BI",
   "main": "server.js",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "supabase:bootstrap": "node scripts/bootstrap-admin.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "nodemailer": "^6.10.1",
     "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "dotenv": "^17.4.2"
   }
 }

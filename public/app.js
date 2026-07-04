@@ -5,6 +5,11 @@ const state = {
   dashboard: null,
   finance: null,
   user: null,
+  users: [],
+  authMode: "local",
+  supabaseEnabled: false,
+  accessToken: "",
+  refreshToken: "",
   pendingFirstAccessEmail: "",
   pendingForgotEmail: "",
   tableSort: {
@@ -53,15 +58,25 @@ function getActiveSession() {
   if (!raw) return null;
   try {
     const session = JSON.parse(raw);
+    if (session.mode === "supabase" && session.accessToken && session.profile) return session;
     const email = normalizeEmail(session.email);
-    return isAllowedEmail(email) ? { email } : null;
+    return isAllowedEmail(email) ? { mode: "local", profile: { email } } : null;
   } catch {
     return null;
   }
 }
 
 function saveActiveSession(user) {
-  localStorage.setItem(SESSION_KEY, JSON.stringify({ email: user.email }));
+  if (state.authMode === "supabase") {
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      mode: "supabase",
+      accessToken: state.accessToken,
+      refreshToken: state.refreshToken,
+      profile: user,
+    }));
+    return;
+  }
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ mode: "local", email: user.email }));
 }
 
 function clearActiveSession() {
@@ -72,8 +87,26 @@ function isAllowedEmail(email) {
   return ALLOWED_USERS.includes(email);
 }
 
-function hasFinancialAccess(email) {
-  return email === FULL_ACCESS_EMAIL;
+function hasFinancialAccess(user) {
+  if (!user) return false;
+  const email = normalizeEmail(typeof user === "string" ? user : user.email);
+  return email === FULL_ACCESS_EMAIL
+    || ["financeiro", "ambos"].includes(user.access_area)
+    || Boolean(user.permissions?.financeiro);
+}
+
+function hasUsersAccess(user) {
+  if (!user) return false;
+  return user.role === "admin"
+    || Boolean(user.permissions?.usuarios)
+    || normalizeEmail(user.email) === FULL_ACCESS_EMAIL;
+}
+
+function hasOperationalAccess(user) {
+  if (state.authMode === "local") return true;
+  return ["operacional", "ambos"].includes(user?.access_area)
+    || Boolean(user?.permissions?.kpis)
+    || Boolean(user?.permissions?.cadastro);
 }
 
 function setLoginMessage(message, ok = false) {
@@ -103,6 +136,7 @@ function showLogin() {
   $("loginForm").classList.remove("hidden");
   $("loginPassword").value = "";
   document.querySelector(".finance-link").classList.add("hidden");
+  document.querySelector(".users-link").classList.add("hidden");
   setLoginMessage("");
 }
 
@@ -136,9 +170,19 @@ function showResetForm(email) {
 }
 
 function applyUserAccess() {
-  const canSeeFinance = hasFinancialAccess(state.user?.email);
+  const canSeeFinance = hasFinancialAccess(state.user);
+  const canManageUsers = hasUsersAccess(state.user);
+  const canSeeOperational = hasOperationalAccess(state.user);
+  const permissions = state.user?.permissions || {};
+  const localMode = state.authMode === "local";
+  document.querySelector(".side-group").classList.toggle("hidden", !canSeeOperational);
   document.querySelector(".finance-link").classList.toggle("hidden", !canSeeFinance);
+  document.querySelector(".users-link").classList.toggle("hidden", !canManageUsers);
+  document.querySelector('[data-op-page="kpis"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.kpis);
+  document.querySelector('[data-op-page="cadastro"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.cadastro);
+  $("refreshDataButton").classList.toggle("hidden", !localMode && !permissions.atualizar_bi);
   if (!canSeeFinance && state.view === "financeiro") setOperationalPage("kpis");
+  if (!canManageUsers && state.view === "usuarios") setOperationalPage("kpis");
 }
 
 function openApp(user) {
@@ -147,7 +191,14 @@ function openApp(user) {
   applyUserAccess();
   $("loginScreen").classList.add("hidden");
   $("appShell").classList.remove("hidden");
-  setOperationalPage("kpis");
+  if (hasOperationalAccess(user)) {
+    const firstPage = user.permissions?.kpis === false && user.permissions?.cadastro ? "cadastro" : "kpis";
+    setOperationalPage(firstPage);
+  } else if (hasFinancialAccess(user)) {
+    setView("financeiro");
+  } else if (hasUsersAccess(user)) {
+    setView("usuarios");
+  }
 }
 
 async function validateLogin(email, password) {
@@ -179,6 +230,57 @@ async function getJson(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Erro ao carregar ${url}`);
   return response.json();
+}
+
+async function loadAuthConfig() {
+  try {
+    const config = await getJson("/api/auth/config");
+    state.supabaseEnabled = Boolean(config.enabled);
+    $("supabaseStatus").textContent = config.enabled ? "Supabase conectado" : "Supabase nao configurado";
+    $("supabaseStatus").classList.toggle("offline", !config.enabled);
+  } catch {
+    state.supabaseEnabled = false;
+  }
+}
+
+async function refreshSupabaseSession() {
+  if (!state.refreshToken) return false;
+  const response = await fetch("/api/auth/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refreshToken: state.refreshToken }),
+  });
+  if (!response.ok) return false;
+  const data = await response.json();
+  state.accessToken = data.accessToken;
+  state.refreshToken = data.refreshToken;
+  state.user = data.profile;
+  saveActiveSession(state.user);
+  return true;
+}
+
+async function authFetch(url, options = {}, retry = true) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (state.accessToken) headers.Authorization = `Bearer ${state.accessToken}`;
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401 && retry && await refreshSupabaseSession()) {
+    return authFetch(url, options, false);
+  }
+  return response;
+}
+
+async function authJson(url, options = {}) {
+  const response = await authFetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Erro de autenticacao.");
+  return data;
+}
+
+function dataJson(url) {
+  return state.supabaseEnabled ? authJson(url) : getJson(url);
 }
 
 async function loadMeta() {
@@ -316,9 +418,11 @@ function sortHeader(tableName, key, label) {
 
 async function refresh() {
   const params = queryParams();
+  const canLoadOperational = !state.supabaseEnabled || hasOperationalAccess(state.user);
+  const canLoadFinance = !state.supabaseEnabled || hasFinancialAccess(state.user);
   const [dashboard, finance] = await Promise.all([
-    getJson(`/api/dashboard?${params}`),
-    getJson(`/api/finance?${financeQueryParams()}`),
+    canLoadOperational ? dataJson(`/api/dashboard?${params}`) : Promise.resolve(null),
+    canLoadFinance ? dataJson(`/api/finance?${financeQueryParams()}`) : Promise.resolve(null),
   ]);
   state.dashboard = dashboard;
   state.finance = finance;
@@ -543,6 +647,147 @@ function renderFinanceDrivers() {
     <tbody>${rows}</tbody>`;
 }
 
+const permissionLabels = {
+  kpis: "Dashboard KPIs",
+  cadastro: "Cadastro",
+  financeiro: "Dash Financeiro",
+  atualizar_bi: "Atualizar BI",
+  usuarios: "Gerenciar Usuarios",
+};
+
+function setUsersMessage(message, ok = false) {
+  $("usersMessage").textContent = message;
+  $("usersMessage").classList.toggle("ok", ok);
+}
+
+async function loadUsers() {
+  if (!state.supabaseEnabled || !hasUsersAccess(state.user)) return;
+  $("usersCount").textContent = "Carregando usuarios...";
+  try {
+    const data = await authJson("/api/auth/users");
+    state.users = data.users || [];
+    renderUsers();
+  } catch (error) {
+    $("usersCount").textContent = "Erro ao carregar";
+    setUsersMessage(error.message);
+  }
+}
+
+function renderUsers() {
+  $("usersCount").textContent = `${state.users.length} usuarios`;
+  $("usersList").innerHTML = state.users.map((user) => {
+    const permissions = user.permissions || {};
+    const initial = (user.name || user.email || "U").trim().charAt(0).toUpperCase();
+    return `
+      <article class="user-card" data-user-id="${user.id}">
+        <div class="user-card-summary">
+          <div class="user-identity">
+            <span class="user-avatar">${escapeHtml(initial)}</span>
+            <div>
+              <strong>${escapeHtml(user.name || "Sem nome")}</strong>
+              <span>${escapeHtml(user.email)} · ${user.role === "admin" ? "Administrador" : "Usuario"}</span>
+            </div>
+          </div>
+          <select class="user-access-select" aria-label="Area de acesso">
+            <option value="operacional" ${user.access_area === "operacional" ? "selected" : ""}>Operacional</option>
+            <option value="financeiro" ${user.access_area === "financeiro" ? "selected" : ""}>Financeiro</option>
+            <option value="ambos" ${user.access_area === "ambos" ? "selected" : ""}>Ambos</option>
+          </select>
+          <select class="user-role-select" aria-label="Perfil">
+            <option value="usuario" ${user.role !== "admin" ? "selected" : ""}>Usuario</option>
+            <option value="admin" ${user.role === "admin" ? "selected" : ""}>Administrador</option>
+          </select>
+          <button class="user-status ${user.active ? "" : "inactive"}" type="button">${user.active ? "Ativo" : "Inativo"}</button>
+          <button class="user-expand" type="button" aria-label="Abrir permissoes">⌄</button>
+        </div>
+        <div class="user-card-details">
+          <div class="user-actions">
+            <button class="allow-all" type="button">Liberar tudo</button>
+            <button class="block-user" type="button">${user.active ? "Bloquear usuario" : "Ativar usuario"}</button>
+            <button class="delete-user" type="button">Excluir usuario</button>
+          </div>
+          <div class="permissions-grid">
+            ${Object.entries(permissionLabels).map(([key, label]) => `
+              <label class="permission-check">
+                <input type="checkbox" data-permission="${key}" ${permissions[key] ? "checked" : ""} />
+                <span>${label}</span>
+              </label>`).join("")}
+          </div>
+        </div>
+      </article>`;
+  }).join("") || `<div class="finance-empty-state">Nenhum usuario cadastrado.</div>`;
+}
+
+async function updateManagedUser(card, payload) {
+  const id = card.dataset.userId;
+  const data = await authJson(`/api/auth/users/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  const index = state.users.findIndex((user) => user.id === id);
+  if (index >= 0) state.users[index] = { ...state.users[index], ...data.user };
+  renderUsers();
+  setUsersMessage("Usuario atualizado.", true);
+}
+
+function userPermissionsFromCard(card) {
+  return Object.fromEntries(
+    [...card.querySelectorAll("[data-permission]")]
+      .map((input) => [input.dataset.permission, input.checked]),
+  );
+}
+
+function bindUsersEvents() {
+  $("usersList").addEventListener("click", async (event) => {
+    const card = event.target.closest(".user-card");
+    if (!card) return;
+    try {
+      if (event.target.closest(".user-expand")) {
+        card.classList.toggle("open");
+        return;
+      }
+      if (event.target.closest(".user-status") || event.target.closest(".block-user")) {
+        const user = state.users.find((item) => item.id === card.dataset.userId);
+        await updateManagedUser(card, { active: !user.active });
+        return;
+      }
+      if (event.target.closest(".allow-all")) {
+        await updateManagedUser(card, {
+          accessArea: "ambos",
+          permissions: Object.fromEntries(Object.keys(permissionLabels).map((key) => [key, true])),
+        });
+        return;
+      }
+      if (event.target.closest(".delete-user")) {
+        const user = state.users.find((item) => item.id === card.dataset.userId);
+        if (!window.confirm(`Excluir ${user.name || user.email}?`)) return;
+        await authJson(`/api/auth/users/${card.dataset.userId}`, { method: "DELETE" });
+        state.users = state.users.filter((item) => item.id !== card.dataset.userId);
+        renderUsers();
+        setUsersMessage("Usuario excluido.", true);
+      }
+    } catch (error) {
+      setUsersMessage(error.message);
+    }
+  });
+
+  $("usersList").addEventListener("change", async (event) => {
+    const card = event.target.closest(".user-card");
+    if (!card) return;
+    try {
+      if (event.target.matches(".user-access-select")) {
+        await updateManagedUser(card, { accessArea: event.target.value });
+      } else if (event.target.matches(".user-role-select")) {
+        await updateManagedUser(card, { role: event.target.value });
+      } else if (event.target.matches("[data-permission]")) {
+        await updateManagedUser(card, { permissions: userPermissionsFromCard(card) });
+      }
+    } catch (error) {
+      setUsersMessage(error.message);
+    }
+  });
+}
+
 function renderWeeklyCharts(targetId = "weeklyCharts") {
   const cities = [...new Set(state.dashboard.weekly.map((row) => row.city))];
   $(targetId).innerHTML = cities.map((city) => `
@@ -628,22 +873,28 @@ function drawLine(ctx, points, color) {
 }
 
 function render() {
-  renderSummary();
-  renderCityCards();
-  renderCadastroCards();
-  renderHotzones();
-  renderDrivers();
-  renderWeeklyCharts();
-  renderWeeklyCharts("cadastroWeeklyCharts");
-  renderFinance();
+  if (state.dashboard) {
+    renderSummary();
+    renderCityCards();
+    renderCadastroCards();
+    renderHotzones();
+    renderDrivers();
+    renderWeeklyCharts();
+    renderWeeklyCharts("cadastroWeeklyCharts");
+  }
+  if (state.finance) renderFinance();
 }
 
 function configureFiltersForView(view) {
-  const financeOnly = view === "financeiro";
-  document.querySelector(".filters").classList.remove("hidden");
+  const filters = document.querySelector(".filters");
+  if (view === "usuarios") {
+    filters.classList.add("hidden");
+    return;
+  }
+  filters.classList.remove("hidden");
   document.querySelectorAll("[data-filter-control]").forEach((element) => {
     const control = element.dataset.filterControl;
-    const visible = !financeOnly || ["city", "start", "end", "actions"].includes(control);
+    const visible = view === "operacional" || ["city", "start", "end", "actions"].includes(control);
     element.classList.toggle("hidden", !visible);
   });
 }
@@ -659,7 +910,11 @@ function applyFinanceDateDefaults() {
 }
 
 function setView(view) {
-  if (view === "financeiro" && !hasFinancialAccess(state.user?.email)) {
+  if (view === "financeiro" && !hasFinancialAccess(state.user)) {
+    setOperationalPage(state.opPage || "kpis");
+    return;
+  }
+  if (view === "usuarios" && !hasUsersAccess(state.user)) {
     setOperationalPage(state.opPage || "kpis");
     return;
   }
@@ -668,17 +923,34 @@ function setView(view) {
   document.querySelector(`.side-link[data-view="${view}"]`).classList.add("active");
   $(view).classList.add("active");
 
-  const operational = view === "operacional";
-  $("pageEyebrow").textContent = operational ? "OPERACIONAL" : "FINANCEIRO";
-  $("pageTitle").textContent = operational ? "Dash Operacional" : "Dash Financeiro";
-  $("pageSubtitle").textContent = operational
-    ? "Tudo que voce enviou foi organizado aqui: TSH, hotzones, entregadores sem rota e evolucao semanal."
-    : "Financeiro por cidade e periodo, com total ganho, dinheiro pendente e projecao de ganhos de 10% a 30%.";
+  const pageCopy = {
+    operacional: {
+      eyebrow: "OPERACIONAL",
+      title: "Dash Operacional",
+      subtitle: "Tudo que voce enviou foi organizado aqui: TSH, hotzones, entregadores sem rota e evolucao semanal.",
+    },
+    financeiro: {
+      eyebrow: "FINANCEIRO",
+      title: "Dash Financeiro",
+      subtitle: "Financeiro por cidade e periodo, com total ganho, dinheiro pendente e projecao de ganhos de 10% a 30%.",
+    },
+    usuarios: {
+      eyebrow: "ADMINISTRACAO",
+      title: "Usuarios",
+      subtitle: "Gerencie acessos, perfis e permissoes usando Supabase.",
+    },
+  };
+  const copy = pageCopy[view];
+  $("pageEyebrow").textContent = copy.eyebrow;
+  $("pageTitle").textContent = copy.title;
+  $("pageSubtitle").textContent = copy.subtitle;
   configureFiltersForView(view);
-  if (operational) {
+  if (view === "operacional") {
     setOperationalPage(state.opPage);
-  } else if (applyFinanceDateDefaults()) {
+  } else if (view === "financeiro" && applyFinanceDateDefaults()) {
     refresh();
+  } else if (view === "usuarios") {
+    loadUsers();
   }
 }
 
@@ -690,8 +962,10 @@ function setOperationalPage(page) {
   $(`op-${page}`).classList.add("active");
   document.querySelector(`.side-link[data-view="operacional"]`).classList.add("active");
   document.querySelector(`.side-link[data-view="financeiro"]`).classList.remove("active");
+  document.querySelector(`.side-link[data-view="usuarios"]`).classList.remove("active");
   $("operacional").classList.add("active");
   $("financeiro").classList.remove("active");
+  $("usuarios").classList.remove("active");
   configureFiltersForView("operacional");
   $("pageEyebrow").textContent = "OPERACIONAL";
 
@@ -754,14 +1028,37 @@ $("loginForm").addEventListener("submit", async (event) => {
   const password = $("loginPassword").value;
   const btn = $("loginForm").querySelector(".login-submit");
   btn.disabled = true;
+  setLoginMessage("");
 
   try {
+    if (state.supabaseEnabled) {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Erro ao entrar.");
+      state.authMode = "supabase";
+      state.accessToken = data.accessToken;
+      state.refreshToken = data.refreshToken;
+      state.user = data.profile;
+      if (data.profile.must_change_password) {
+        showFirstAccess(email);
+      } else {
+        await refresh();
+        openApp(data.profile);
+      }
+      return;
+    }
+
+    state.authMode = "local";
     const result = await validateLogin(email, password);
     if (!result.ok) { setLoginMessage(result.message); return; }
     if (result.firstAccess) { showFirstAccess(email); return; }
     openApp({ email });
-  } catch {
-    setLoginMessage("Erro de conexao. Tente novamente.");
+  } catch (error) {
+    setLoginMessage(error.message || "Erro de conexao. Tente novamente.");
   } finally {
     btn.disabled = false;
   }
@@ -773,12 +1070,26 @@ $("firstAccessForm").addEventListener("submit", async (event) => {
   const newPassword = $("newPassword").value;
   const confirmPassword = $("confirmPassword").value;
 
+  if (newPassword.length < 6) { setPasswordMessage("A senha precisa ter pelo menos 6 caracteres."); return; }
+  if (newPassword === DEFAULT_PASSWORD) { setPasswordMessage("Escolha uma senha diferente da senha padrao."); return; }
   if (newPassword !== confirmPassword) { setPasswordMessage("As senhas nao conferem."); return; }
 
   const btn = $("firstAccessForm").querySelector(".login-submit");
   btn.disabled = true;
 
   try {
+    if (state.authMode === "supabase") {
+      await authJson("/api/auth/change-password", {
+        method: "POST",
+        body: JSON.stringify({ password: newPassword }),
+      });
+      state.user = { ...state.user, must_change_password: false };
+      setPasswordMessage("Senha salva com sucesso.", true);
+      await refresh();
+      openApp(state.user);
+      return;
+    }
+
     const result = await fetch("/api/set-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -788,15 +1099,27 @@ $("firstAccessForm").addEventListener("submit", async (event) => {
     if (!result.ok) { setPasswordMessage(result.message); return; }
     setPasswordMessage("Senha salva com sucesso.", true);
     openApp({ email });
-  } catch {
-    setPasswordMessage("Erro de conexao. Tente novamente.");
+  } catch (error) {
+    setPasswordMessage(error.message || "Erro de conexao. Tente novamente.");
   } finally {
     btn.disabled = false;
   }
 });
 
-$("skipFirstAccess").addEventListener("click", () => { openApp({ email: state.pendingFirstAccessEmail }); });
-$("cancelFirstAccess").addEventListener("click", () => { showLogin(); });
+$("skipFirstAccess").addEventListener("click", () => {
+  if (state.authMode === "supabase") {
+    setPasswordMessage("A troca de senha e obrigatoria no primeiro acesso.");
+    return;
+  }
+  openApp({ email: state.pendingFirstAccessEmail });
+});
+
+$("cancelFirstAccess").addEventListener("click", () => {
+  state.accessToken = "";
+  state.refreshToken = "";
+  state.user = null;
+  showLogin();
+});
 
 document.querySelector(".forgot-link").addEventListener("click", (event) => {
   event.preventDefault();
@@ -864,11 +1187,50 @@ $("resetForm").addEventListener("submit", async (event) => {
 
 $("logoutButton").addEventListener("click", () => {
   clearActiveSession();
+  state.accessToken = "";
+  state.refreshToken = "";
   state.user = null;
   $("appShell").classList.add("hidden");
   $("loginScreen").classList.remove("hidden");
   showLogin();
 });
+
+$("createUserForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const accessArea = $("newUserAccess").value;
+  const role = $("newUserRole").value;
+  const permissions = {
+    kpis: accessArea !== "financeiro",
+    cadastro: accessArea !== "financeiro",
+    financeiro: accessArea !== "operacional",
+    atualizar_bi: role === "admin",
+    usuarios: role === "admin",
+  };
+
+  try {
+    const data = await authJson("/api/auth/users", {
+      method: "POST",
+      body: JSON.stringify({
+        name: $("newUserName").value,
+        email: $("newUserEmail").value,
+        password: $("newUserPassword").value,
+        accessArea,
+        role,
+        permissions,
+      }),
+    });
+    state.users.unshift(data.user);
+    renderUsers();
+    $("createUserForm").reset();
+    $("newUserPassword").value = DEFAULT_PASSWORD;
+    setUsersMessage("Usuario criado com sucesso.", true);
+  } catch (error) {
+    setUsersMessage(error.message);
+  }
+});
+
+$("reloadUsersButton").addEventListener("click", loadUsers);
+bindUsersEvents();
 
 $("refreshDataButton").addEventListener("click", async () => {
   const button = $("refreshDataButton");
@@ -876,7 +1238,9 @@ $("refreshDataButton").addEventListener("click", async () => {
   button.textContent = "Puxando BI...";
   button.disabled = true;
   try {
-    const response = await fetch("/api/reload", { method: "POST" });
+    const response = state.supabaseEnabled
+      ? await authFetch("/api/reload", { method: "POST" })
+      : await fetch("/api/reload", { method: "POST" });
     if (!response.ok) throw new Error("Erro ao atualizar BI");
     state.meta = await getJson("/api/meta");
     updateSidebarDataInfo(state.meta);
@@ -907,13 +1271,30 @@ $("togglePassword").addEventListener("click", () => {
   $("togglePassword").textContent = visible ? "Ver" : "Ocultar";
 });
 
-loadMeta()
-  .then(refresh)
-  .then(() => {
+Promise.all([loadAuthConfig(), loadMeta()])
+  .then(async () => {
     const session = getActiveSession();
-    if (session) {
-      openApp(session);
+    if (session?.mode === "supabase" && state.supabaseEnabled) {
+      state.authMode = "supabase";
+      state.accessToken = session.accessToken;
+      state.refreshToken = session.refreshToken;
+      state.user = session.profile;
+      try {
+        const data = await authJson("/api/auth/me");
+        state.user = data.profile;
+        await refresh();
+        openApp(data.profile);
+      } catch {
+        clearActiveSession();
+        showLogin();
+      }
+    } else if (session?.mode === "local") {
+      state.authMode = "local";
+      state.user = session.profile;
+      await refresh();
+      openApp(session.profile);
     } else {
+      if (!state.supabaseEnabled) await refresh();
       setView("operacional");
       setOperationalPage("kpis");
     }

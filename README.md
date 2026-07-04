@@ -18,6 +18,8 @@ http://localhost:3000
 ## Publicar no Render
 
 1. Crie um novo **Web Service** no Render usando este repositorio GitHub.
+   - Nao crie como **Static Site**.
+   - Se aparecer campo **Publish Directory**, o tipo esta errado. Este projeto nao usa Publish Directory.
 2. O Render detecta Node.js automaticamente.
 3. Use:
 
@@ -76,10 +78,41 @@ BI_DIR=/caminho/para/BI
 
 ## Login
 
-Os logins autorizados estao configurados no frontend. A senha inicial e:
+## Supabase e usuarios
+
+1. Crie um projeto no Supabase.
+2. Abra **SQL Editor** e execute:
+
+```text
+supabase/schema.sql
+```
+
+3. No Render, configure:
+
+```text
+SUPABASE_URL
+SUPABASE_ANON_KEY
+SUPABASE_SERVICE_ROLE_KEY
+```
+
+Nunca coloque `SUPABASE_SERVICE_ROLE_KEY` no navegador ou em codigo publico.
+
+4. Para criar o primeiro administrador, configure um `.env` local usando `.env.example` e execute:
+
+```bash
+npm run supabase:bootstrap
+```
+
+Administrador inicial:
+
+```text
+recebapoder2026@gmail.com
+```
+
+Senha inicial:
 
 ```text
 RECEBA99
 ```
 
-No primeiro acesso, o usuario deve criar uma nova senha.
+No primeiro acesso, o administrador deve criar uma nova senha. Depois ele pode usar a pagina **Usuarios** para criar contas, definir area de acesso, perfil, status e permissoes.
