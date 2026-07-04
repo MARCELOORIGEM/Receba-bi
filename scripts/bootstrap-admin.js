@@ -31,6 +31,23 @@ async function main() {
     });
     if (error) throw error;
     user = data.user;
+  } else {
+    const { data, error } = await supabase.auth.admin.updateUserById(user.id, {
+      password,
+      email_confirm: true,
+      user_metadata: {
+        ...user.user_metadata,
+        name: "Receba Poder",
+        must_change_password: true,
+      },
+      app_metadata: {
+        ...user.app_metadata,
+        role: "admin",
+        access_area: "ambos",
+      },
+    });
+    if (error) throw error;
+    user = data.user;
   }
 
   const { error: profileError } = await supabase.from("receba_profiles").upsert({

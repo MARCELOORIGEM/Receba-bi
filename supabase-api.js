@@ -127,6 +127,7 @@ function createSupabaseApi() {
     const client = publicClient();
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error || !data.session || !data.user) {
+      console.error("Supabase login error:", error?.message || "Sessao ou usuario ausente");
       return res.status(401).json({ error: "Email ou senha incorretos." });
     }
 

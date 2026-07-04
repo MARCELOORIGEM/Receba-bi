@@ -10,15 +10,12 @@ const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const LOCAL_BI_DIR = path.join(__dirname, "BI");
-const RENDER_BI_DIR = process.env.RENDER_DISK_PATH
-  ? path.join(process.env.RENDER_DISK_PATH, "BI")
-  : "";
 const VOLUME_BI_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH
   ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "BI")
   : "";
 
 function configuredBiDir() {
-  const candidates = [process.env.BI_DIR, RENDER_BI_DIR, VOLUME_BI_DIR];
+  const candidates = [process.env.BI_DIR, VOLUME_BI_DIR];
   const preferred = candidates.find((dir) => dir && fs.existsSync(dir) && walkXlsx(dir).length);
   if (preferred) return preferred;
   return LOCAL_BI_DIR;
@@ -539,6 +536,15 @@ function buildFinance(rows) {
 app.use("/api/auth", supabase.router);
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    operationalRows: data.length,
+    financialRows: financeData.length,
+    supabase: supabase.enabled,
+  });
+});
+
 app.get("/api/meta", (_req, res) => {
   res.json({
     rowCount: data.length,
@@ -598,7 +604,6 @@ const FIXED_PASSWORDS = {
 const resetCodes = new Map(); // email → { code, expiresAt }
 
 function usersFilePath() {
-  if (process.env.RENDER_DISK_PATH) return path.join(process.env.RENDER_DISK_PATH, "users.json");
   if (process.env.RAILWAY_VOLUME_MOUNT_PATH) return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "users.json");
   return path.join(__dirname, "users.json");
 }
