@@ -1299,17 +1299,20 @@ Promise.all([loadAuthConfig(), loadMeta()])
         clearActiveSession();
         showLogin();
       }
-    } else if (session?.mode === "local") {
+    } else if (session?.mode === "local" && !state.supabaseEnabled) {
       state.authMode = "local";
       state.user = session.profile;
       await refresh();
       openApp(session.profile);
     } else {
+      clearActiveSession();
       if (!state.supabaseEnabled) await refresh();
       setView("operacional");
       setOperationalPage("kpis");
     }
   })
   .catch((error) => {
-    document.body.innerHTML = `<pre style="padding:20px;color:#ff6b12">${error.stack}</pre>`;
+    console.error("Erro ao iniciar sessao:", error);
+    clearActiveSession();
+    showLogin();
   });
