@@ -46,7 +46,9 @@
           <label>Senha
             <div class="password-row">
               <input id="loginPassword" type="password" placeholder="Digite sua senha" autocomplete="current-password" />
-              <button id="togglePassword" type="button">Ver</button>
+              <button class="password-toggle" type="button" data-target="loginPassword" aria-label="Mostrar senha">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
             </div>
           </label>
           <div class="login-message" id="loginMessage"></div>
@@ -57,8 +59,22 @@
         <form id="firstAccessForm" class="first-access hidden">
           <h2>Definir senha pessoal</h2>
           <p>Voce acessou com a senha padrao RECEBA99. Deseja cadastrar uma senha pessoal? (opcional)</p>
-          <label>Nova senha<input id="newPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" /></label>
-          <label>Confirmar senha<input id="confirmPassword" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" /></label>
+          <label>Nova senha
+            <div class="password-row">
+              <input id="newPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" />
+              <button class="password-toggle" type="button" data-target="newPassword" aria-label="Mostrar senha">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </label>
+          <label>Confirmar senha
+            <div class="password-row">
+              <input id="confirmPassword" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" />
+              <button class="password-toggle" type="button" data-target="confirmPassword" aria-label="Mostrar senha">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </label>
           <div class="login-message" id="passwordMessage"></div>
           <button class="login-submit" type="submit">SALVAR SENHA</button>
           <button id="skipFirstAccess" class="ghost-login" type="button">Acessar sem alterar</button>
@@ -78,8 +94,22 @@
           <h2>Redefinir senha</h2>
           <p>Digite o codigo enviado para o seu email e escolha uma nova senha.</p>
           <label>Codigo<input id="resetCode" type="text" inputmode="numeric" placeholder="000000" maxlength="6" autocomplete="one-time-code" /></label>
-          <label>Nova senha<input id="resetPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" /></label>
-          <label>Confirmar senha<input id="resetConfirm" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" /></label>
+          <label>Nova senha
+            <div class="password-row">
+              <input id="resetPassword" type="password" placeholder="Digite a nova senha" autocomplete="new-password" />
+              <button class="password-toggle" type="button" data-target="resetPassword" aria-label="Mostrar senha">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </label>
+          <label>Confirmar senha
+            <div class="password-row">
+              <input id="resetConfirm" type="password" placeholder="Confirme a nova senha" autocomplete="new-password" />
+              <button class="password-toggle" type="button" data-target="resetConfirm" aria-label="Mostrar senha">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </label>
           <div class="login-message" id="resetMessage"></div>
           <button class="login-submit" type="submit">REDEFINIR SENHA</button>
           <button id="cancelReset" class="ghost-login" type="button">Voltar ao login</button>
@@ -268,7 +298,14 @@
               <form id="createUserForm" class="user-create-form">
                 <label>Nome<input id="newUserName" type="text" placeholder="Nome completo" required /></label>
                 <label>E-mail<input id="newUserEmail" type="text" inputmode="email" placeholder="usuario@receba.com.br" required /></label>
-                <label>Senha<input id="newUserPassword" type="password" value="RECEBA99" placeholder="Senha inicial" required /></label>
+                <label>Senha
+                  <div class="password-row">
+                    <input id="newUserPassword" type="password" value="RECEBA99" placeholder="Senha inicial" required />
+                    <button class="password-toggle" type="button" data-target="newUserPassword" aria-label="Mostrar senha">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                  </div>
+                </label>
                 <label>Area
                   <select id="newUserAccess">
                     <option value="operacional">Operacional</option>

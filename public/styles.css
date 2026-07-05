@@ -331,22 +331,30 @@ h1, h2, h3, p { margin: 0; }
 }
 
 .password-row input {
-  padding-right: 112px;
+  padding-right: 44px;
 }
 
-.password-row button {
+.password-row .password-toggle {
   position: absolute;
-  right: 14px;
+  right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  width: 78px;
-  height: 42px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 1px solid rgba(255,91,24,.48);
   border-radius: 999px;
   background: rgba(255,91,24,.16);
   color: #ff9a6b;
-  font-weight: 900;
   cursor: pointer;
+}
+
+.password-row .password-toggle svg {
+  width: 17px;
+  height: 17px;
 }
 
 .forgot-link {
