@@ -329,6 +329,10 @@ function filterRows(query) {
   });
 }
 
+function filterRowsExcept(query, except) {
+  return filterRows(except ? { ...query, [except]: "" } : query);
+}
+
 function colorForPercent(value) {
   if (value >= 0.9) return "good";
   if (value >= 0.75) return "warn";
@@ -632,7 +636,8 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/meta", (_req, res) => {
+app.get("/api/meta", (req, res) => {
+  const query = req.query;
   res.json({
     rowCount: data.length,
     files: uniq(data.map((row) => row.file)),
@@ -641,12 +646,12 @@ app.get("/api/meta", (_req, res) => {
     financeRowCount: financeData.length,
     loadedAt: loadedAt.toISOString(),
     latestSourceUpdate: latestSourceUpdate()?.toISOString() || "",
-    cities: cityOrder.filter((city) => data.some((row) => row.city === city)),
-    hotzones: uniq(data.map((row) => row.hotzone)),
-    cpfs: uniq(data.map((row) => row.cpf)),
-    ids: uniq(data.map((row) => row.id)),
-    names: uniq(data.map((row) => row.name)),
-    weeks: uniq(data.map((row) => row.week)),
+    cities: cityOrder.filter((city) => filterRowsExcept(query, "city").some((row) => row.city === city)),
+    hotzones: uniq(filterRowsExcept(query, "hotzone").map((row) => row.hotzone)),
+    cpfs: uniq(filterRowsExcept(query, "cpf").map((row) => row.cpf)),
+    ids: uniq(filterRowsExcept(query, "id").map((row) => row.id)),
+    names: uniq(filterRowsExcept(query, "name").map((row) => row.name)),
+    weeks: uniq(filterRowsExcept(query, "week").map((row) => row.week)),
     minDate: data.map((row) => row.date).sort()[0] || "",
     maxDate: data.map((row) => row.date).sort().at(-1) || "",
     financeMinDate: financeData.map((row) => row.date).filter(Boolean).sort()[0] || "",

@@ -346,11 +346,23 @@ function updateSidebarDataInfo(meta) {
   $("updateStatus").textContent = "Atualizado";
 }
 
+async function updateFilterOptions() {
+  const meta = await getJson(`/api/meta?${queryParams()}`);
+  state.meta = { ...state.meta, ...meta };
+  buildSearchSelect("city", state.meta.cities);
+  buildSearchSelect("hotzone", state.meta.hotzones);
+  buildSearchSelect("cpf", state.meta.cpfs);
+  buildSearchSelect("id", state.meta.ids);
+  buildSearchSelect("name", state.meta.names);
+  buildSearchSelect("week", state.meta.weeks);
+}
+
 function buildSearchSelect(filterId, values) {
   const root = document.querySelector(`.search-select[data-filter="${filterId}"]`);
+  const currentValue = $(filterId).value || "";
   root.innerHTML = `
     <button class="search-select-trigger" type="button">
-      <span>Todos</span>
+      <span>${escapeHtml(currentValue) || "Todos"}</span>
       <i></i>
     </button>
     <div class="search-select-panel">
@@ -384,6 +396,7 @@ function buildSearchSelect(filterId, values) {
         search.value = "";
         renderOptions();
         refresh();
+        updateFilterOptions();
       });
     });
   };
@@ -422,6 +435,7 @@ function clearFilters() {
   $("start").value = finance ? state.meta?.financeMinDate || "" : state.meta?.minDate || "";
   $("end").value = finance ? state.meta?.financeMaxDate || "" : state.meta?.maxDate || "";
   refresh();
+  updateFilterOptions();
 }
 
 function escapeHtml(value) {
@@ -1124,8 +1138,11 @@ document.querySelectorAll(".side-sub-link").forEach((button) => {
   button.addEventListener("click", () => setOperationalPage(button.dataset.opPage));
 });
 
-["city", "hotzone", "cpf", "id", "name", "week", "start", "end"].forEach((filterId) => {
-  $(filterId).addEventListener("change", refresh);
+["start", "end"].forEach((filterId) => {
+  $(filterId).addEventListener("change", () => {
+    refresh();
+    updateFilterOptions();
+  });
 });
 
 $("clearFiltersButton").addEventListener("click", clearFilters);
