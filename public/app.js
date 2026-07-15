@@ -311,7 +311,11 @@ async function authFetch(url, options = {}, retry = true) {
 async function authJson(url, options = {}) {
   const response = await authFetch(url, options);
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || "Erro de autenticacao.");
+  if (!response.ok) {
+    const error = new Error(data.error || "Erro de autenticacao.");
+    error.status = response.status;
+    throw error;
+  }
   return data;
 }
 
@@ -1537,7 +1541,7 @@ document.querySelectorAll(".password-toggle").forEach((button) => {
 Promise.all([loadAuthConfig(), loadMeta()])
   .then(async () => {
     const session = getActiveSession();
-    if (session?.mode === "supabase" && state.supabaseEnabled) {
+    if (session?.mode === "supabase") {
       state.authMode = "supabase";
       state.accessToken = session.accessToken;
       state.refreshToken = session.refreshToken;
@@ -1547,8 +1551,10 @@ Promise.all([loadAuthConfig(), loadMeta()])
         state.user = data.profile;
         await refresh();
         openApp(data.profile);
-      } catch {
-        clearActiveSession();
+      } catch (error) {
+        // So encerra a sessao guardada se o servidor confirmou que ela e invalida.
+        // Falhas de rede/deploy nao devem deslogar o usuario.
+        if (error.status === 401) clearActiveSession();
         showLogin();
       }
     } else if (session?.mode === "local" && !state.supabaseEnabled) {
@@ -1557,7 +1563,7 @@ Promise.all([loadAuthConfig(), loadMeta()])
       await refresh();
       openApp(session.profile);
     } else {
-      clearActiveSession();
+      if (session) clearActiveSession();
       if (!state.supabaseEnabled) await refresh();
       setView("operacional");
       setOperationalPage("kpis");
@@ -1565,6 +1571,5 @@ Promise.all([loadAuthConfig(), loadMeta()])
   })
   .catch((error) => {
     console.error("Erro ao iniciar sessao:", error);
-    clearActiveSession();
     showLogin();
   });
