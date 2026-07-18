@@ -178,11 +178,12 @@
 
         <section class="filters">
           <label data-filter-control="city">Cidade<div class="search-select" data-filter="city"></div><input id="city" type="hidden" /></label>
-          <label data-filter-control="hotzone">Hot Zone / Nome da loja<div class="search-select" data-filter="hotzone"></div><input id="hotzone" type="hidden" /></label>
+          <label data-filter-control="hotzone">Hotzone<div class="search-select" data-filter="hotzone"></div><input id="hotzone" type="hidden" /></label>
           <label data-filter-control="cpf">CPF do entregador<div class="search-select" data-filter="cpf"></div><input id="cpf" type="hidden" /></label>
           <label data-filter-control="id">ID do entregador<div class="search-select" data-filter="id"></div><input id="id" type="hidden" /></label>
           <label data-filter-control="name">Nome do entregador<div class="search-select" data-filter="name"></div><input id="name" type="hidden" /></label>
-          <label data-filter-control="week">Semana Ano<div class="search-select" data-filter="week"></div><input id="week" type="hidden" /></label>
+          <label data-filter-control="week">Semana<div class="search-select" data-filter="week"></div><input id="week" type="hidden" /></label>
+          <label data-filter-control="shift">Turno<div class="search-select" data-filter="shift"></div><input id="shift" type="hidden" /></label>
           <label data-filter-control="start">Data inicial<input id="start" type="date" /></label>
           <label data-filter-control="end">Data final<input id="end" type="date" /></label>
           <div class="filter-actions" data-filter-control="actions">
@@ -215,8 +216,18 @@
             <section class="op-page" id="op-cadastro">
               <section class="panel page-panel">
                 <div class="panel-head">
-                  <h2>Grafico de linhas</h2>
-                  <span>Corridas, TSH e critical por cidade</span>
+                  <div>
+                    <h2>Grafico de linhas</h2>
+                    <span>Corridas, TSH e critical por cidade</span>
+                  </div>
+                  <div class="chart-metric-toggle">
+                    <button type="button" class="chart-metric-btn active" data-metric="orders">Corridas</button>
+                    <button type="button" class="chart-metric-btn active" data-metric="tsh">TSH</button>
+                    <button type="button" class="chart-metric-btn active" data-metric="critical">TSH Critical</button>
+                    <button type="button" class="chart-metric-btn" data-metric="caa">CAA</button>
+                    <button type="button" class="chart-metric-btn" data-metric="ar">AR</button>
+                    <button type="button" class="chart-metric-btn" data-metric="ot">Overtime</button>
+                  </div>
                 </div>
                 <div class="chart-grid" id="cadastroWeeklyCharts"></div>
               </section>
@@ -240,8 +251,18 @@
             <section class="op-page" id="op-evolucao">
               <section class="panel page-panel">
                 <div class="panel-head">
-                  <h2>Evolucao semanal</h2>
-                  <span>Corridas, TSH e critical por cidade</span>
+                  <div>
+                    <h2>Evolucao semanal</h2>
+                    <span>Corridas, TSH e critical por cidade</span>
+                  </div>
+                  <div class="chart-metric-toggle">
+                    <button type="button" class="chart-metric-btn active" data-metric="orders">Corridas</button>
+                    <button type="button" class="chart-metric-btn active" data-metric="tsh">TSH</button>
+                    <button type="button" class="chart-metric-btn active" data-metric="critical">TSH Critical</button>
+                    <button type="button" class="chart-metric-btn" data-metric="caa">CAA</button>
+                    <button type="button" class="chart-metric-btn" data-metric="ar">AR</button>
+                    <button type="button" class="chart-metric-btn" data-metric="ot">Overtime</button>
+                  </div>
                 </div>
                 <div class="chart-grid" id="weeklyCharts"></div>
               </section>

@@ -3,6 +3,7 @@ const DEFAULT_PASSWORD = "RECEBA99";
 const state = {
   view: "operacional",
   opPage: "kpis",
+  chartMetrics: new Set(["orders", "tsh", "critical"]),
   meta: null,
   dashboard: null,
   finance: null,
@@ -246,7 +247,7 @@ async function validateLogin(email, password) {
 
 function queryParams() {
   const params = new URLSearchParams();
-  ["city", "hotzone", "cpf", "id", "name", "week", "start", "end"].forEach((filterId) => {
+  ["city", "hotzone", "cpf", "id", "name", "week", "shift", "start", "end"].forEach((filterId) => {
     if ($(filterId).value) params.set(filterId, $(filterId).value);
   });
   return params.toString();
@@ -336,6 +337,7 @@ async function loadMeta() {
   buildSearchSelect("id", state.meta.ids);
   buildSearchSelect("name", state.meta.names);
   buildSearchSelect("week", state.meta.weeks);
+  buildSearchSelect("shift", state.meta.shifts);
   $("start").value = state.meta.minDate;
   $("end").value = state.meta.maxDate;
   updateSidebarDataInfo(state.meta);
@@ -355,6 +357,7 @@ async function updateFilterOptions() {
   buildSearchSelect("id", state.meta.ids);
   buildSearchSelect("name", state.meta.names);
   buildSearchSelect("week", state.meta.weeks);
+  buildSearchSelect("shift", state.meta.shifts);
 }
 
 function buildSearchSelect(filterId, values) {
@@ -430,7 +433,7 @@ function resetSearchSelect(filterId) {
 }
 
 function clearFilters() {
-  ["city", "hotzone", "cpf", "id", "name", "week"].forEach(resetSearchSelect);
+  ["city", "hotzone", "cpf", "id", "name", "week", "shift"].forEach(resetSearchSelect);
   const finance = state.view === "financeiro";
   $("start").value = finance ? state.meta?.financeMinDate || "" : state.meta?.minDate || "";
   $("end").value = finance ? state.meta?.financeMaxDate || "" : state.meta?.maxDate || "";
@@ -860,6 +863,16 @@ function bindUsersEvents() {
   });
 }
 
+const CHART_METRIC_CONFIG = {
+  orders: { label: "Corridas", color: "#ff6b12", scale: "orders", fmt: fmtInt },
+  tsh: { label: "TSH", color: "#00d6bd", scale: "pct", fmt: fmtPct },
+  critical: { label: "TSH Critical", color: "#ffbf00", scale: "pct", fmt: fmtPct },
+  caa: { label: "CAA", color: "#c77dff", scale: "pct", fmt: fmtPct },
+  ar: { label: "AR", color: "#ff5da2", scale: "pct", fmt: fmtPct },
+  ot: { label: "Overtime", color: "#7dd3fc", scale: "pct", fmt: fmtPct },
+};
+const CHART_METRIC_ORDER = Object.keys(CHART_METRIC_CONFIG);
+
 function renderWeeklyCharts(targetId = "weeklyCharts") {
   const cities = [...new Set(state.dashboard.weekly.map((row) => row.city))];
   $(targetId).innerHTML = cities.map((city) => `
@@ -878,7 +891,8 @@ function drawChart(canvas, rows) {
   const width = canvas.width;
   ctx.clearRect(0, 0, width, canvas.height);
 
-  drawLegend(ctx);
+  const activeMetrics = CHART_METRIC_ORDER.filter((key) => state.chartMetrics.has(key));
+  drawLegend(ctx, activeMetrics);
 
   ctx.strokeStyle = "#303030";
   ctx.beginPath();
@@ -890,10 +904,12 @@ function drawChart(canvas, rows) {
   const x = (index) => 45 + index * ((width - 90) / Math.max(rows.length - 1, 1));
   const yOrders = (value) => 158 - (value / maxOrders) * 88;
   const yPct = (value) => 158 - value * 86;
+  const yFor = (metric, value) => (CHART_METRIC_CONFIG[metric].scale === "orders" ? yOrders(value) : yPct(value));
 
-  drawLine(ctx, rows.map((row, index) => [x(index), yOrders(row.orders)]), "#ff6b12");
-  drawLine(ctx, rows.map((row, index) => [x(index), yPct(row.tsh)]), "#00d6bd");
-  drawLine(ctx, rows.map((row, index) => [x(index), yPct(row.critical)]), "#ffbf00");
+  activeMetrics.forEach((metric) => {
+    const config = CHART_METRIC_CONFIG[metric];
+    drawLine(ctx, rows.map((row, index) => [x(index), yFor(metric, row[metric])]), config.color);
+  });
 
   rows.forEach((row, index) => {
     const px = x(index);
@@ -901,31 +917,34 @@ function drawChart(canvas, rows) {
     ctx.font = "11px Arial";
     ctx.fillText(row.week.replace("2026-", ""), px - 12, 178);
 
-    ctx.fillStyle = "#ff6b12";
-    ctx.font = "bold 11px Arial";
-    ctx.fillText(fmtInt(row.orders), px - 18, yOrders(row.orders) - 24);
-
-    ctx.fillStyle = "#00d6bd";
-    ctx.fillText(fmtPct(row.tsh).replace(",0%", "%"), px - 13, yPct(row.tsh) - 10);
-
-    ctx.fillStyle = "#ffbf00";
-    ctx.fillText(fmtPct(row.critical).replace(",0%", "%"), px - 13, yPct(row.critical) + 18);
+    activeMetrics.forEach((metric, metricIndex) => {
+      const config = CHART_METRIC_CONFIG[metric];
+      const value = row[metric];
+      const py = yFor(metric, value) + (metricIndex % 2 === 0 ? -10 : 18) - (Math.floor(metricIndex / 2) * 12);
+      ctx.fillStyle = config.color;
+      ctx.font = "bold 11px Arial";
+      ctx.fillText(config.fmt(value).replace(",0%", "%"), px - 15, py);
+    });
   });
 }
 
-function drawLegend(ctx) {
-  const items = [
-    ["Corridas", "#ff6b12", 16],
-    ["TSH", "#00d6bd", 92],
-    ["TSH Critical", "#ffbf00", 142],
-  ];
-
+function drawLegend(ctx, activeMetrics) {
   ctx.font = "10px Arial";
-  items.forEach(([label, color, x]) => {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, 22, 18, 4);
+  const maxX = 540;
+  let x = 16;
+  let y = 22;
+  activeMetrics.forEach((metric) => {
+    const config = CHART_METRIC_CONFIG[metric];
+    const itemWidth = 24 + ctx.measureText(config.label).width + 20;
+    if (x + itemWidth > maxX) {
+      x = 16;
+      y += 14;
+    }
+    ctx.fillStyle = config.color;
+    ctx.fillRect(x, y, 18, 4);
     ctx.fillStyle = "#e8e8e8";
-    ctx.fillText(label, x + 24, 27);
+    ctx.fillText(config.label, x + 24, y + 5);
+    x += itemWidth;
   });
 }
 
@@ -958,12 +977,15 @@ function render() {
   renderDailyResult();
 }
 
-function dailyResultRow(driver, rank) {
+function dailyResultRow(driver, rank, expandable) {
   return `
-    <tr>
+    <tr class="${expandable ? "driver-row" : ""}">
+      ${expandable ? `<td class="expand-cell"><button type="button" class="expand-toggle" aria-label="Expandir turnos">›</button></td>` : ""}
       <td class="num">${rank}</td>
       <td>${escapeHtml(driver.id)}</td>
       <td>${escapeHtml(driver.name)}</td>
+      <td>${escapeHtml(driver.hotzone || "-")}</td>
+      <td>${escapeHtml(driver.vehicle || "-")}</td>
       <td class="num">${fmtInt(driver.orders)}</td>
       <td class="num ${pctClass(driver.tsh)}">${fmtPct(driver.tsh)}</td>
       <td class="num ${pctClass(driver.ar)}">${fmtPct(driver.ar)}</td>
@@ -972,8 +994,33 @@ function dailyResultRow(driver, rank) {
     </tr>`;
 }
 
-function dailyResultTableHead() {
-  return `<thead><tr><th>#</th><th>ID</th><th>ENTREGADOR</th><th>PEDIDOS</th><th>TSH</th><th>AR</th><th>CAA</th><th>OT</th></tr></thead>`;
+function dailyResultShiftRow(driver, colspan) {
+  const shifts = driver.shifts || [];
+  const body = shifts.length
+    ? shifts.map((shift) => `
+      <tr>
+        <td>${escapeHtml(shift.shift)}</td>
+        <td class="num">${fmtInt(shift.orders)}</td>
+        <td class="num ${pctClass(shift.tsh)}">${fmtPct(shift.tsh)}</td>
+        <td class="num ${pctClass(shift.ar)}">${fmtPct(shift.ar)}</td>
+        <td class="num ${pctClass(shift.caa)}">${fmtPct(shift.caa)}</td>
+        <td class="num ${pctClass(shift.ot)}">${fmtPct(shift.ot)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="6">Sem dados por turno.</td></tr>`;
+
+  return `
+    <tr class="shift-detail-row hidden">
+      <td colspan="${colspan}">
+        <table class="shift-detail-table">
+          <thead><tr><th>TURNO</th><th>PEDIDOS</th><th>TSH</th><th>AR</th><th>CAA</th><th>OT</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </td>
+    </tr>`;
+}
+
+function dailyResultTableHead(expandable) {
+  return `<thead><tr>${expandable ? "<th></th>" : ""}<th>#</th><th>ID</th><th>ENTREGADOR</th><th>HOTZONE</th><th>MODAL</th><th>PEDIDOS</th><th>TSH</th><th>AR</th><th>CAA</th><th>OT</th></tr></thead>`;
 }
 
 function renderDailyResult() {
@@ -989,19 +1036,19 @@ function renderDailyResult() {
         <h2 class="city-cell ${cityToneClass(group.city)}">${group.city}</h2>
         <span>${group.top.length + group.rest.length} entregadores no periodo</span>
       </div>
-      <h3 class="daily-result-subhead">Top 5 melhores</h3>
+      <h3 class="daily-result-subhead">Top 10 melhores</h3>
       <div class="table-wrap">
         <table>
-          ${dailyResultTableHead()}
-          <tbody>${group.top.map((driver, index) => dailyResultRow(driver, index + 1)).join("") || `<tr><td colspan="8">Sem dados no periodo.</td></tr>`}</tbody>
+          ${dailyResultTableHead(false)}
+          <tbody>${group.top.map((driver, index) => dailyResultRow(driver, index + 1, false)).join("") || `<tr><td colspan="10">Sem dados no periodo.</td></tr>`}</tbody>
         </table>
       </div>
       ${group.rest.length ? `
       <h3 class="daily-result-subhead">Demais entregadores</h3>
       <div class="table-wrap tall">
-        <table>
-          ${dailyResultTableHead()}
-          <tbody>${group.rest.map((driver, index) => dailyResultRow(driver, index + 6)).join("")}</tbody>
+        <table class="expandable-table">
+          ${dailyResultTableHead(true)}
+          <tbody>${group.rest.map((driver, index) => `${dailyResultRow(driver, index + 11, true)}${dailyResultShiftRow(driver, 11)}`).join("")}</tbody>
         </table>
       </div>` : ""}
     </section>`).join("");
@@ -1513,6 +1560,34 @@ function bindUploadEvents() {
 }
 
 bindUploadEvents();
+
+function setChartMetric(metric) {
+  if (state.chartMetrics.has(metric)) {
+    state.chartMetrics.delete(metric);
+  } else {
+    state.chartMetrics.add(metric);
+  }
+  document.querySelectorAll(".chart-metric-btn").forEach((button) => {
+    button.classList.toggle("active", state.chartMetrics.has(button.dataset.metric));
+  });
+  if (state.dashboard) {
+    renderWeeklyCharts();
+    renderWeeklyCharts("cadastroWeeklyCharts");
+  }
+}
+
+document.querySelectorAll(".chart-metric-btn").forEach((button) => {
+  button.addEventListener("click", () => setChartMetric(button.dataset.metric));
+});
+
+$("dailyResultCities").addEventListener("click", (event) => {
+  const row = event.target.closest(".driver-row");
+  if (!row) return;
+  const detail = row.nextElementSibling;
+  if (!detail || !detail.classList.contains("shift-detail-row")) return;
+  detail.classList.toggle("hidden");
+  row.querySelector(".expand-toggle")?.classList.toggle("open");
+});
 
 $("refreshDataButton").addEventListener("click", async () => {
   const button = $("refreshDataButton");

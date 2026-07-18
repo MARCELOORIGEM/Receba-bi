@@ -93,6 +93,13 @@ function normalizeCity(value) {
   return plain || "SEM CIDADE";
 }
 
+function normalizeVehicle(value) {
+  const plain = normalizeText(value).toUpperCase();
+  if (plain.includes("MOTO")) return "Moto";
+  if (plain.includes("BIKE") || plain.includes("BICICLETA")) return "Bike";
+  return String(value ?? "").trim();
+}
+
 function toNumber(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const text = String(value ?? "")
@@ -185,6 +192,7 @@ function readRows() {
         shift: getShift(raw["Período do turno"] || raw["Per�odo do turno"]),
         hotzone: String(raw["Hot Zone / Nome da loja"] || "Sem hotzone").trim(),
         scheduleType: String(raw["Tipo de agendamento"] || ""),
+        vehicle: normalizeVehicle(rawValue(raw, ["Modal", "Modalidade", "Tipo de veiculo", "Tipo de veículo", "Meio de transporte", "Veiculo", "Veículo"])),
         id: String(raw["ID do entregador"] || "").trim(),
         cpf: String(raw["CPF do entregador"] || "").trim(),
         name: String(raw["Nome do entregador"] || "").trim(),
@@ -323,6 +331,7 @@ function filterRows(query) {
     if (query.id && row.id !== query.id) return false;
     if (query.name && row.name !== query.name) return false;
     if (query.week && row.week !== query.week) return false;
+    if (query.shift && row.shift !== query.shift) return false;
     if (start && row.date < start) return false;
     if (end && row.date > end) return false;
     return true;
@@ -446,7 +455,16 @@ function buildDashboard(rows) {
       const [city, week] = key.split("||");
       const general = summarizeTsh(weekRows);
       const critical = summarizeTsh(criticalRows(weekRows));
-      return { city, week, orders: sum(weekRows, "orders"), tsh: general.tsh, critical: critical.tsh };
+      return {
+        city,
+        week,
+        orders: sum(weekRows, "orders"),
+        tsh: general.tsh,
+        critical: critical.tsh,
+        ar: avg(weekRows, "ar"),
+        caa: avg(weekRows, "caa"),
+        ot: avg(weekRows, "ot"),
+      };
     })
     .sort((a, b) => a.week.localeCompare(b.week) || cityOrder.indexOf(a.city) - cityOrder.indexOf(b.city));
 
@@ -469,6 +487,42 @@ function buildDashboard(rows) {
   };
 }
 
+const SHIFT_ORDER = ["Almoco", "Tarde", "Jantar", "Ceia"];
+
+function pickMostFrequent(rows, key) {
+  const counts = new Map();
+  for (const row of rows) {
+    const value = row[key];
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  let best = "";
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function buildDriverShifts(driverRows) {
+  return SHIFT_ORDER.map((shift) => {
+    const shiftRows = driverRows.filter((row) => row.shift === shift);
+    if (!shiftRows.length) return null;
+    const shiftGeneral = summarizeTsh(shiftRows);
+    return {
+      shift,
+      orders: sum(shiftRows, "orders"),
+      tsh: shiftGeneral.tsh,
+      ar: avg(shiftRows, "ar"),
+      caa: avg(shiftRows, "caa"),
+      ot: avg(shiftRows, "ot"),
+    };
+  }).filter(Boolean);
+}
+
 function buildDailyResult(rows) {
   const drivers = [...groupBy(rows, (row) => `${row.city}||${row.cpf}||${row.id}`).values()]
     .map((driverRows) => {
@@ -479,11 +533,14 @@ function buildDailyResult(rows) {
         id: base.id,
         cpf: base.cpf,
         name: base.name,
+        hotzone: pickMostFrequent(driverRows, "hotzone"),
+        vehicle: pickMostFrequent(driverRows, "vehicle"),
         orders: sum(driverRows, "orders"),
         tsh: general.tsh,
         ar: avg(driverRows, "ar"),
         caa: avg(driverRows, "caa"),
         ot: avg(driverRows, "ot"),
+        shifts: buildDriverShifts(driverRows),
       };
     })
     .filter((driver) => driver.name || driver.cpf || driver.id);
@@ -496,8 +553,8 @@ function buildDailyResult(rows) {
         .sort((a, b) => b.tsh - a.tsh || b.orders - a.orders);
       return {
         city,
-        top: cityDrivers.slice(0, 5),
-        rest: cityDrivers.slice(5),
+        top: cityDrivers.slice(0, 10),
+        rest: cityDrivers.slice(10),
       };
     });
 
@@ -652,6 +709,7 @@ app.get("/api/meta", (req, res) => {
     ids: uniq(filterRowsExcept(query, "id").map((row) => row.id)),
     names: uniq(filterRowsExcept(query, "name").map((row) => row.name)),
     weeks: uniq(filterRowsExcept(query, "week").map((row) => row.week)),
+    shifts: SHIFT_ORDER.filter((shift) => filterRowsExcept(query, "shift").some((row) => row.shift === shift)),
     minDate: data.map((row) => row.date).sort()[0] || "",
     maxDate: data.map((row) => row.date).sort().at(-1) || "",
     financeMinDate: financeData.map((row) => row.date).filter(Boolean).sort()[0] || "",
