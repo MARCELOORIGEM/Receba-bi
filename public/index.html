@@ -141,6 +141,15 @@
             <span class="dot green"></span>
             Dash Financeiro
           </button>
+          <button class="side-link audit-link hidden" data-view="auditoria">
+            <span class="dot blue"></span>
+            Auditoria
+            <span class="side-badge hidden" id="auditBadge">0</span>
+          </button>
+          <button class="side-link promo-link hidden" data-view="promocoes">
+            <span class="dot yellow"></span>
+            Promocoes
+          </button>
           <button class="side-link users-link hidden" data-view="usuarios">
             <span class="user-icon"></span>
             Usuarios
@@ -280,6 +289,8 @@
             </section>
 
             <section class="finance-kpis" id="financeKpis"></section>
+            <section class="promo-summary" id="financePromoSummary"></section>
+            <section class="profit-min" id="financeProfitMin"></section>
             <section class="finance-projections" id="financeProjections"></section>
 
             <section class="finance-grid">
@@ -302,6 +313,21 @@
 
             <section class="panel page-panel">
               <div class="panel-head">
+                <div>
+                  <h2>Faturamento semanal</h2>
+                  <span>Semana comercial de segunda a domingo</span>
+                </div>
+                <div class="chart-toolbar">
+                  <div class="chart-legend" id="weeklyRevenueLegend"></div>
+                  <button id="weeklyRevenueTableToggle" class="chart-table-toggle" type="button" aria-expanded="false">Ver tabela</button>
+                </div>
+              </div>
+              <div class="revenue-chart" id="weeklyRevenueChart"></div>
+              <div class="chart-table hidden" id="weeklyRevenueTable"></div>
+            </section>
+
+            <section class="panel page-panel">
+              <div class="panel-head">
                 <h2>Evolucao diaria</h2>
                 <span>Total e ganho projetado a 20%</span>
               </div>
@@ -314,6 +340,67 @@
                 <span id="financeDriverInfo"></span>
               </div>
               <div class="table-wrap tall"><table id="financeDriverTable"></table></div>
+            </section>
+          </section>
+
+          <section id="auditoria" class="view">
+            <section class="audit-verdict" id="auditVerdict"></section>
+
+            <section class="finance-kpis audit-kpis" id="auditKpis"></section>
+
+            <section class="panel page-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Conferencia dia a dia</h2>
+                  <span>Transfeera do dia D paga o financeiro do dia D-1. Clique no dia para filtrar.</span>
+                </div>
+                <span class="audit-period" id="auditPeriod">--</span>
+              </div>
+              <div class="audit-day-toolbar">
+                <div class="audit-day-chips" id="auditDayChips"></div>
+                <div class="audit-day-tools">
+                  <label class="audit-day-field">Mes<select id="auditDayMonth"></select></label>
+                  <input id="auditDaySearch" type="search" placeholder="Buscar dia (08/07)" autocomplete="off" />
+                  <button id="auditDayOrder" class="audit-day-order" type="button">Mais recentes</button>
+                  <button id="auditDayClear" class="audit-day-clear hidden" type="button">Limpar</button>
+                </div>
+              </div>
+              <div class="audit-days" id="auditDays"></div>
+              <div class="audit-days-footer" id="auditDaysFooter"></div>
+            </section>
+
+            <section class="panel page-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>O que precisa de acao</h2>
+                  <span id="auditInfo"></span>
+                </div>
+                <div class="audit-toolbar">
+                  <label class="audit-status-filter">Status<select id="auditStatus"></select></label>
+                  <input id="auditSearch" type="search" placeholder="Buscar CPF ou nome" autocomplete="off" />
+                  <button id="auditExport" class="audit-export" type="button">Exportar CSV</button>
+                </div>
+              </div>
+              <div class="table-wrap tall"><table id="auditTable"></table></div>
+            </section>
+          </section>
+
+          <section id="promocoes" class="view">
+            <section class="finance-kpis promo-kpis" id="promoKpis"></section>
+
+            <section class="panel page-panel">
+              <div class="panel-head">
+                <div>
+                  <h2>Promocoes internas por dia e cidade</h2>
+                  <span id="promoInfo">Clique em uma celula para digitar o valor.</span>
+                </div>
+                <form class="promo-add" id="promoAddForm">
+                  <label>Nova data<input id="promoNewDate" type="date" required /></label>
+                  <button type="submit">Adicionar dia</button>
+                </form>
+              </div>
+              <div class="promo-message" id="promoMessage"></div>
+              <div class="table-wrap tall"><table id="promoTable" class="promo-table"></table></div>
             </section>
           </section>
 
@@ -438,6 +525,19 @@
             <section class="upload-grid upload-grid-single">
               <article class="upload-card upload-card-finance" data-target="FINANCEIRO">
                 <header><h3>Financeiro</h3><span class="upload-status" data-role="status">Pronto</span></header>
+                <label class="upload-dropzone" data-role="dropzone">
+                  <input type="file" accept=".xlsx" multiple hidden data-role="input" />
+                  <span>Arraste o .xlsx ou clique</span>
+                </label>
+                <ul class="upload-log" data-role="log"></ul>
+                <div class="upload-files">
+                  <div class="upload-files-head"><span>Arquivos importados</span><small data-role="files-count"></small></div>
+                  <ul class="upload-files-list" data-role="files-list"></ul>
+                </div>
+              </article>
+
+              <article class="upload-card upload-card-finance" data-target="TRANSFEERA">
+                <header><h3>Transfeera</h3><span class="upload-status" data-role="status">Pronto</span></header>
                 <label class="upload-dropzone" data-role="dropzone">
                   <input type="file" accept=".xlsx" multiple hidden data-role="input" />
                   <span>Arraste o .xlsx ou clique</span>

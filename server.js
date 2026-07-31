@@ -24,9 +24,10 @@ function configuredBiDir() {
 
 const BI_DIR = configuredBiDir();
 const FINANCE_DIR = path.join(BI_DIR, "FINANCEIRO");
+const TRANSFEERA_DIR = path.join(BI_DIR, "TRANSFEERA");
 const supabase = createSupabaseApi();
 
-const UPLOAD_TARGETS = ["CURITIBA", "GOIANIA", "RIO DE JANEIRO", "SÃO PAULO", "FINANCEIRO"];
+const UPLOAD_TARGETS = ["CURITIBA", "GOIANIA", "RIO DE JANEIRO", "SÃO PAULO", "FINANCEIRO", "TRANSFEERA"];
 
 const biUpload = multer({
   storage: multer.diskStorage({
@@ -57,7 +58,9 @@ function canUseTarget(profile, target) {
   if (!profile) return false;
   if (profile.role === "admin") return true;
   const permissions = profile.permissions || {};
-  return target === "FINANCEIRO" ? Boolean(permissions.atualizar_bi_financeiro) : Boolean(permissions.atualizar_bi);
+  return ["FINANCEIRO", "TRANSFEERA"].includes(target)
+    ? Boolean(permissions.atualizar_bi_financeiro)
+    : Boolean(permissions.atualizar_bi);
 }
 
 function listBiFiles() {
@@ -122,7 +125,7 @@ function parseDate(value) {
     const parsed = XLSX.SSF.parse_date_code(value);
     if (parsed) return new Date(parsed.y, parsed.m - 1, parsed.d);
   }
-  const match = String(value ?? "").match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  const match = String(value ?? "").match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
   if (match) return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]));
 
   const isoLike = String(value ?? "").match(/^(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})$/);
@@ -141,6 +144,42 @@ function brDate(date) {
   return `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}/${date.getFullYear()}`;
 }
 
+function addDays(iso, days) {
+  const date = parseDate(iso);
+  if (!date) return "";
+  date.setDate(date.getDate() + days);
+  return isoDate(date);
+}
+
+function shortBr(iso) {
+  const date = parseDate(iso);
+  return date ? `${String(date.getDate()).padStart(2, "0")}/${String(date.getMonth() + 1).padStart(2, "0")}` : "";
+}
+
+// Semana comercial de segunda a domingo.
+function weekStartIso(iso) {
+  const date = parseDate(iso);
+  if (!date) return "";
+  const weekday = date.getDay();
+  date.setDate(date.getDate() + (weekday === 0 ? -6 : 1 - weekday));
+  return isoDate(date);
+}
+
+function normalizeCpf(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.length > 14) return digits.slice(-14);
+  if (digits.length > 11) return digits.padStart(14, "0");
+  return digits.padStart(11, "0");
+}
+
+function formatCpf(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length === 11) return digits.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  if (digits.length === 14) return digits.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
+  return digits;
+}
+
 function getWeekLabel(date) {
   if (!date) return "Sem semana";
   const first = new Date(date.getFullYear(), 0, 1);
@@ -149,13 +188,19 @@ function getWeekLabel(date) {
   return `${date.getFullYear()}-S${String(week).padStart(2, "0")}`;
 }
 
+// As faixas do relatorio sao 11:00-14:00, 14:00-18:00, 18:00-22:00 e 22:00-23:59.
+// O corte da tarde precisa ser em 14h: com 15h a faixa 14:00-18:00 caia no almoco
+// e o turno Tarde nunca aparecia.
 function getShift(period) {
   const hour = Number(String(period ?? "").match(/^(\d{1,2})/)?.[1] ?? 0);
   if (hour >= 22) return "Ceia";
   if (hour >= 18) return "Jantar";
-  if (hour >= 15) return "Tarde";
+  if (hour >= 14) return "Tarde";
   return "Almoco";
 }
+
+const SHIFT_ORDER = ["Almoco", "Tarde", "Jantar", "Ceia"];
+const SHIFT_LABELS = { Almoco: "ALMOÇO", Tarde: "TARDE", Jantar: "JANTAR", Ceia: "CEIA" };
 
 function walkXlsx(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -167,7 +212,10 @@ function walkXlsx(dir) {
 }
 
 function readRows() {
-  const files = walkXlsx(BI_DIR).filter((file) => !normalizeText(path.relative(BI_DIR, file)).toUpperCase().startsWith("FINANCEIRO"));
+  const files = walkXlsx(BI_DIR).filter((file) => {
+    const relative = normalizeText(path.relative(BI_DIR, file)).toUpperCase();
+    return !relative.startsWith("FINANCEIRO") && !relative.startsWith("TRANSFEERA");
+  });
   const rows = [];
 
   for (const file of files) {
@@ -283,14 +331,93 @@ function readFinanceRows() {
   return rows.filter((row) => row.city && (row.cpf || row.name || row.totalDaily));
 }
 
+// Um pagamento devolvido/falho nao tira dinheiro do caixa: so conta como pago o que liquidou.
+const SETTLED_STATUSES = ["", "FINALIZADO", "TRANSFERIDO", "PAGO", "CONCLUIDO", "CONCLUIDA"];
+const FAILED_STATUSES = ["DEVOLVIDO", "FALHA", "FALHOU", "CANCELADO", "CANCELADA", "REJEITADO", "ERRO"];
+
+function transferStatusKind(status) {
+  const key = normalizeText(status).toUpperCase().trim();
+  if (SETTLED_STATUSES.includes(key)) return "pago";
+  if (FAILED_STATUSES.includes(key)) return "falhou";
+  return "pendente";
+}
+
+// "Repasse 09/07" vira a data do lote quando a linha nao tem "Data transferido".
+function batchDate(batch, fallbackYear) {
+  const match = String(batch ?? "").match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/);
+  if (!match) return null;
+  let year = match[3] ? Number(match[3]) : fallbackYear;
+  if (!year) return null;
+  if (year < 100) year += 2000;
+  return new Date(year, Number(match[2]) - 1, Number(match[1]));
+}
+
+function readTransferRows() {
+  const files = walkXlsx(TRANSFEERA_DIR);
+  const rows = [];
+
+  for (const file of files) {
+    const workbook = XLSX.readFile(file, { cellDates: true });
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      const json = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const parsed = [];
+
+      for (const raw of json) {
+        const value = toNumber(rawValue(raw, ["Valor", "Valor(R$)", "Valor R$"]));
+        const transferDate = parseDate(rawValue(raw, ["Data transferido", "Data de transferencia", "Data de transferência", "Data"]));
+        const cpf = normalizeCpf(rawValue(raw, ["CPF ou CNPJ", "CPF", "CNPJ", "Chave PIX"]));
+        const name = String(rawValue(raw, ["Favorecido", "Nome", "Entregador"]) || "").trim();
+        if (!value && !cpf && !name) continue;
+        parsed.push({ raw, value, transferDate, cpf, name });
+      }
+
+      const yearCount = new Map();
+      for (const item of parsed) {
+        if (!item.transferDate) continue;
+        const year = item.transferDate.getFullYear();
+        yearCount.set(year, (yearCount.get(year) || 0) + 1);
+      }
+      const fileYear = [...yearCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+      for (const item of parsed) {
+        const batch = String(rawValue(item.raw, ["Nome do lote", "Lote"]) || "").trim();
+        const date = item.transferDate || batchDate(batch, fileYear);
+        const status = String(rawValue(item.raw, ["Status"]) || "").trim();
+
+        rows.push({
+          date: isoDate(date),
+          dateBr: brDate(date),
+          financeDate: addDays(isoDate(date), -1),
+          dateSource: item.transferDate ? "transferencia" : (date ? "lote" : ""),
+          cpf: item.cpf,
+          name: item.name,
+          value: item.value,
+          status,
+          statusKind: transferStatusKind(status),
+          reason: String(rawValue(item.raw, ["Motivo", "Motivo da devolucao", "Motivo da devolução"]) || "").trim(),
+          batch,
+          receipt: String(rawValue(item.raw, ["Comprovante Transfeera"]) || "").trim(),
+          bankReceipt: String(rawValue(item.raw, ["Comprovante Banco"]) || "").trim(),
+          file: path.relative(__dirname, file),
+        });
+      }
+    }
+  }
+
+  return rows.filter((row) => row.cpf || row.name || row.value);
+}
+
 let data = readRows();
 let financeData = readFinanceRows();
+let transferData = readTransferRows();
 let loadedAt = new Date();
 let sourceFiles = walkXlsx(BI_DIR);
 
 function reloadData() {
   data = readRows();
   financeData = readFinanceRows();
+  transferData = readTransferRows();
   loadedAt = new Date();
   sourceFiles = walkXlsx(BI_DIR);
   return data;
@@ -384,10 +511,15 @@ function buildDashboard(rows) {
     .map(([city, cityRows]) => {
       const general = summarizeTsh(cityRows);
       const critical = summarizeTsh(criticalRows(cityRows));
-      const shifts = ["Almoco", "Tarde", "Jantar"].map((shift) => ({
-        label: shift === "Almoco" ? "ALMOÇO" : shift.toUpperCase(),
-        ...summarizeTsh(cityRows.filter((row) => row.shift === shift)),
-      }));
+      // Cada cidade mostra os turnos que realmente existem no relatorio dela:
+      // Sao Paulo e Curitiba nao tem ceia, Goiania e Rio tem.
+      const shifts = SHIFT_ORDER
+        .map((shift) => ({ shift, rows: cityRows.filter((row) => row.shift === shift) }))
+        .filter(({ rows: shiftRows }) => shiftRows.length)
+        .map(({ shift, rows: shiftRows }) => ({
+          label: SHIFT_LABELS[shift],
+          ...summarizeTsh(shiftRows),
+        }));
 
       return {
         city,
@@ -487,8 +619,6 @@ function buildDashboard(rows) {
   };
 }
 
-const SHIFT_ORDER = ["Almoco", "Tarde", "Jantar", "Ceia"];
-
 function pickMostFrequent(rows, key) {
   const counts = new Map();
   for (const row of rows) {
@@ -548,9 +678,10 @@ function buildDailyResult(rows) {
   const cities = cityOrder
     .filter((city) => drivers.some((driver) => driver.city === city))
     .map((city) => {
+      // Ranking por corridas finalizadas, da maior para a menor; TSH desempata.
       const cityDrivers = drivers
         .filter((driver) => driver.city === city)
-        .sort((a, b) => b.tsh - a.tsh || b.orders - a.orders);
+        .sort((a, b) => b.orders - a.orders || b.tsh - a.tsh);
       return {
         city,
         top: cityDrivers.slice(0, 10),
@@ -572,7 +703,24 @@ function filterFinanceRows(query) {
   });
 }
 
-function buildFinance(rows) {
+// Promocoes internas sao custo da Receba: entram no financeiro para mostrar
+// quanto sobrou sem elas. Respeitam o mesmo periodo e a mesma cidade do filtro.
+function promotionsForQuery(query) {
+  const promotions = buildPromotions(query);
+  const city = normalizeCity(query?.city || "");
+  const cities = cityOrder.includes(city) ? [city] : cityOrder;
+  const amountOf = (row) => cities.reduce((total, item) => total + (row.values[item] || 0), 0);
+
+  const byDate = new Map(promotions.rows.map((row) => [row.date, amountOf(row)]));
+  const byCity = new Map(cities.map((item) => [item, promotions.totals[item] || 0]));
+  const total = [...byDate.values()].reduce((sumValue, value) => sumValue + value, 0);
+
+  return { total, byDate, byCity, cities };
+}
+
+function buildFinance(rows, query = {}) {
+  const promotions = promotionsForQuery(query);
+  const promotionOn = (date) => promotions.byDate.get(date) || 0;
   const totalDaily = sum(rows, "totalDaily");
   const deliveryGains = sum(rows, "deliveryGains");
   const rewards = sum(rows, "rewards");
@@ -587,12 +735,40 @@ function buildFinance(rows) {
   const drivers = distinct(rows, "cpf") || distinct(rows, "name");
   const ticket = rows.length ? totalDaily / rows.length : 0;
 
+  // A comissao e cobrada sobre ganhos + recompensas; a promocao e custo da Receba,
+  // entao o ganho real e a comissao menos o que foi investido em promocao.
   const rates = [0.10, 0.15, 0.20, 0.25, 0.30];
-  const projections = rates.map((rate) => ({
-    rate,
-      gain: earningsBase * rate,
+  const projections = rates.map((rate) => {
+    const gross = earningsBase * rate;
+    return {
+      rate,
       label: `${Math.round(rate * 100)}%`,
-  }));
+      gross,
+      promotions: promotions.total,
+      gain: gross - promotions.total,
+    };
+  });
+
+  // Entregas vem do BI operacional (o relatorio financeiro nao traz contagem de pedidos).
+  const operationalOrders = sum(filterRows({
+    city: query.city || "",
+    start: query.start || "",
+    end: query.end || "",
+  }), "orders");
+
+  const minRate = rates[0];
+  const minGross = earningsBase * minRate;
+  const minNet = minGross - promotions.total;
+  const profit = {
+    rate: minRate,
+    label: `${Math.round(minRate * 100)}%`,
+    gross: minGross,
+    net: minNet,
+    orders: operationalOrders,
+    drivers,
+    perOrder: operationalOrders ? minNet / operationalOrders : null,
+    perDriver: drivers ? minNet / drivers : null,
+  };
 
   const byCity = [...groupBy(rows, (row) => row.city).entries()]
     .map(([city, groupRows]) => ({
@@ -609,6 +785,8 @@ function buildFinance(rows) {
       gain10: (sum(groupRows, "deliveryGains") + sum(groupRows, "rewards")) * 0.10,
       gain20: (sum(groupRows, "deliveryGains") + sum(groupRows, "rewards")) * 0.20,
       gain30: (sum(groupRows, "deliveryGains") + sum(groupRows, "rewards")) * 0.30,
+      promotions: promotions.byCity.get(city) || 0,
+      netOfPromotions: sum(groupRows, "totalDaily") - (promotions.byCity.get(city) || 0),
     }))
     .sort((a, b) => b.totalDaily - a.totalDaily);
 
@@ -634,6 +812,37 @@ function buildFinance(rows) {
     .sort((a, b) => b.totalDaily - a.totalDaily)
     .slice(0, 300);
 
+  const byWeek = [...groupBy(rows.filter((row) => row.date), (row) => weekStartIso(row.date)).entries()]
+    .map(([weekStart, groupRows]) => {
+      const weekEnd = addDays(weekStart, 6);
+      const weekEarnings = sum(groupRows, "deliveryGains") + sum(groupRows, "rewards");
+      const activeDays = distinct(groupRows, "date");
+      const weekTotal = sum(groupRows, "totalDaily");
+      const weekPromotions = [...new Set(groupRows.map((row) => row.date))]
+        .reduce((total, date) => total + promotionOn(date), 0);
+      return {
+        weekStart,
+        weekEnd,
+        label: `${shortBr(weekStart)}-${shortBr(weekEnd)}`,
+        rangeBr: `${brDate(parseDate(weekStart))} a ${brDate(parseDate(weekEnd))}`,
+        promotions: weekPromotions,
+        netOfPromotions: weekTotal - weekPromotions,
+        totalDaily: weekTotal,
+        deliveryGains: sum(groupRows, "deliveryGains"),
+        rewards: sum(groupRows, "rewards"),
+        earningsBase: weekEarnings,
+        gain20: weekEarnings * 0.20,
+        drivers: distinct(groupRows, "cpf") || distinct(groupRows, "name"),
+        activeDays,
+        avgPerDay: activeDays ? sum(groupRows, "totalDaily") / activeDays : 0,
+      };
+    })
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart))
+    .map((week, index, list) => {
+      const previous = index > 0 ? list[index - 1].totalDaily : 0;
+      return { ...week, change: previous ? (week.totalDaily - previous) / previous : null };
+    });
+
   const byDate = [...groupBy(rows.filter((row) => row.date), (row) => row.date).entries()]
     .map(([date, groupRows]) => ({
       date,
@@ -643,8 +852,19 @@ function buildFinance(rows) {
       rewards: sum(groupRows, "rewards"),
       earningsBase: sum(groupRows, "deliveryGains") + sum(groupRows, "rewards"),
       gain20: (sum(groupRows, "deliveryGains") + sum(groupRows, "rewards")) * 0.20,
+      promotions: promotionOn(date),
+      netOfPromotions: sum(groupRows, "totalDaily") - promotionOn(date),
     }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+    .sort((a, b) => a.date.localeCompare(b.date))
+    // Comparativo dia a dia com o dia anterior que tem financeiro, igual ao semanal.
+    .map((day, index, list) => {
+      const previous = index > 0 ? list[index - 1] : null;
+      return {
+        ...day,
+        previousDateBr: previous?.dateBr || "",
+        change: previous?.totalDaily ? (day.totalDaily - previous.totalDaily) / previous.totalDaily : null,
+      };
+    });
 
   const composition = [
     { label: "Corridas em dinheiro", value: deliveryGains, color: "orange" },
@@ -670,14 +890,550 @@ function buildFinance(rows) {
       referralRewards,
       drivers,
       ticket,
+      promotions: promotions.total,
+      netOfPromotions: totalDaily - promotions.total,
+      promotionShare: totalDaily ? promotions.total / totalDaily : 0,
       start: rows.map((row) => row.date).filter(Boolean).sort()[0] || "",
       end: rows.map((row) => row.date).filter(Boolean).sort().at(-1) || "",
     },
     projections,
+    profit,
     byCity,
     byDriver,
     byDate,
+    byWeek,
     composition,
+  };
+}
+
+// ── Auditoria Transfeera x Financeiro ─────────────────────────────────────────
+// Regra do negocio: o Transfeera so pode conter o que esta no relatorio financeiro.
+// O repasse do dia D no Transfeera paga o financeiro do dia D-1.
+
+const AUDIT_TOLERANCE = 0.01;
+
+// O Transfeera cobra R$ 1,00 por transferencia, descontado do valor que chega ao
+// entregador. Pagar ate R$ 1,00 a menos por transferencia e a taxa, nao divergencia.
+const TRANSFEERA_FEE = 1.00;
+
+function feeAllowance(transfer) {
+  return TRANSFEERA_FEE * Math.max(1, transfer?.paidCount || 1) + AUDIT_TOLERANCE;
+}
+
+function isFeeOnlyGap(diff, transfer) {
+  return diff < -AUDIT_TOLERANCE && -diff <= feeAllowance(transfer);
+}
+
+const AUDIT_ISSUES = {
+  nao_previsto: { severity: "critico", label: "Pago sem previsao" },
+  valor_maior: { severity: "critico", label: "Pago a mais" },
+  pagamento_sem_cpf: { severity: "critico", label: "Pago sem CPF" },
+  valor_menor: { severity: "atencao", label: "Pago a menos" },
+  nao_pago: { severity: "atencao", label: "Nao pago" },
+  pagamento_falhou: { severity: "atencao", label: "Devolvido / falhou" },
+  status_pendente: { severity: "atencao", label: "Status pendente" },
+  ok: { severity: "ok", label: "Conciliado" },
+};
+
+const SEVERITY_ORDER = { critico: 0, atencao: 1, ok: 2 };
+
+function sameName(left, right) {
+  if (!left || !right) return true;
+  return normalizeText(left).toUpperCase().replace(/\s+/g, " ").trim()
+    === normalizeText(right).toUpperCase().replace(/\s+/g, " ").trim();
+}
+
+function addKeyToDate(keysByDate, date, key) {
+  if (!keysByDate.has(date)) keysByDate.set(date, new Set());
+  keysByDate.get(date).add(key);
+}
+
+function buildFinanceIndex() {
+  const groups = new Map();
+  const keysByDate = new Map();
+  const cpfs = new Set();
+  const byCpf = new Map();
+  const dates = new Set();
+  const seen = new Set();
+  let withoutCpf = 0;
+  let duplicated = 0;
+
+  for (const row of financeData) {
+    if (!row.date) continue;
+    dates.add(row.date);
+    const cpf = normalizeCpf(row.cpf);
+    if (!cpf) {
+      withoutCpf += 1;
+      continue;
+    }
+
+    // O mesmo dia exportado duas vezes (nomes de arquivo diferentes) dobraria
+    // todos os valores e criaria divergencia em massa. Conta uma vez so.
+    const fingerprint = `${cpf}|${row.date}|${row.id}|${row.totalDaily}`;
+    if (seen.has(fingerprint)) {
+      duplicated += 1;
+      continue;
+    }
+    seen.add(fingerprint);
+    cpfs.add(cpf);
+    if (!byCpf.has(cpf)) byCpf.set(cpf, { name: row.name, city: row.city });
+
+    const key = `${cpf}||${row.date}`;
+    const current = groups.get(key) || { cpf, date: row.date, rows: [], amount: 0, name: "", city: "" };
+    current.rows.push(row);
+    current.amount += Number(row.totalDaily) || 0;
+    current.name = current.name || row.name;
+    current.city = current.city || row.city;
+    groups.set(key, current);
+    addKeyToDate(keysByDate, row.date, key);
+  }
+
+  return { groups, keysByDate, cpfs, byCpf, dates, withoutCpf, duplicated };
+}
+
+function buildTransferIndex() {
+  const groups = new Map();
+  const keysByDate = new Map();
+  const noCpfByDate = new Map();
+  const dates = new Set();
+  const seen = new Set();
+  const noCpf = [];
+  const noDate = [];
+  let duplicated = 0;
+
+  for (const row of transferData) {
+    // O comprovante carrega o id da transferencia: reimportar o mesmo extrato
+    // nao pode virar pagamento em dobro.
+    const fingerprint = row.receipt || `${row.cpf}|${row.date}|${row.value}|${row.batch}|${row.status}`;
+    if (seen.has(fingerprint)) {
+      duplicated += 1;
+      continue;
+    }
+    seen.add(fingerprint);
+
+    if (!row.financeDate) {
+      noDate.push(row);
+      continue;
+    }
+    if (!row.cpf) {
+      noCpf.push(row);
+      continue;
+    }
+    dates.add(row.financeDate);
+
+    const key = `${row.cpf}||${row.financeDate}`;
+    const current = groups.get(key) || {
+      cpf: row.cpf,
+      financeDate: row.financeDate,
+      rows: [],
+      paid: 0,
+      failedAmount: 0,
+      pendingAmount: 0,
+      paidCount: 0,
+      failedCount: 0,
+      pendingCount: 0,
+    };
+    current.rows.push(row);
+    const value = Number(row.value) || 0;
+    if (row.statusKind === "pago") {
+      current.paid += value;
+      current.paidCount += 1;
+    } else if (row.statusKind === "falhou") {
+      current.failedAmount += value;
+      current.failedCount += 1;
+    } else {
+      current.pendingAmount += value;
+      current.pendingCount += 1;
+    }
+    groups.set(key, current);
+    addKeyToDate(keysByDate, row.financeDate, key);
+  }
+
+  // Linhas sem CPF ainda contam a data do lote para a cobertura do dia.
+  for (const row of noCpf) {
+    if (!row.financeDate) continue;
+    dates.add(row.financeDate);
+    if (!noCpfByDate.has(row.financeDate)) noCpfByDate.set(row.financeDate, []);
+    noCpfByDate.get(row.financeDate).push(row);
+  }
+
+  return { groups, keysByDate, noCpfByDate, dates, noCpf, noDate, duplicated };
+}
+
+function classifyAudit(finance, transfer) {
+  const financeAmount = finance?.amount || 0;
+  const paid = transfer?.paid || 0;
+  const diff = paid - financeAmount;
+
+  if (!finance) {
+    if (paid > AUDIT_TOLERANCE) return "nao_previsto";
+    if (transfer?.failedCount) return "pagamento_falhou";
+    if (transfer?.pendingCount) return "status_pendente";
+    return "ok";
+  }
+  if (financeAmount <= AUDIT_TOLERANCE) {
+    return paid > AUDIT_TOLERANCE ? "nao_previsto" : "ok";
+  }
+  if (!transfer || paid <= AUDIT_TOLERANCE) return "nao_pago";
+  if (diff > AUDIT_TOLERANCE) return "valor_maior";
+  // Diferenca acima da taxa e divergencia; ate a taxa segue para as demais checagens.
+  if (diff < -AUDIT_TOLERANCE && !isFeeOnlyGap(diff, transfer)) return "valor_menor";
+  if (transfer.pendingCount) return "status_pendente";
+  // Nome diferente com CPF e valor batendo e erro de digitacao ou nome abreviado da
+  // conta bancaria, nao divergencia de dinheiro: vira etiqueta, nao problema.
+  return "ok";
+}
+
+function buildAuditRow(issue, finance, transfer, financeDate, financeCpfs, financeByCpf) {
+  const transferRows = transfer?.rows || [];
+  const financeRows = finance?.rows || [];
+  const first = transferRows[0] || {};
+  const financeAmount = finance?.amount || 0;
+  const paid = transfer?.paid || 0;
+  const diff = paid - financeAmount;
+  const cpf = transfer?.cpf || finance?.cpf || "";
+  const known = financeByCpf.get(cpf);
+
+  let risk = 0;
+  if (issue === "nao_previsto" || issue === "pagamento_sem_cpf") risk = paid;
+  else if (issue === "valor_maior") risk = diff;
+
+  let pending = 0;
+  if (issue === "nao_pago") pending = financeAmount - paid;
+  else if (issue === "valor_menor") pending = -diff;
+
+  const flags = [];
+  if (isFeeOnlyGap(diff, transfer)) flags.push("taxa_transfeera");
+  // Todo repasse deveria chegar com a taxa descontada. Quando o valor bate na
+  // casa do centavo a taxa nao foi cobrada: e isso que merece conferencia, nao
+  // o caso normal de ter taxa.
+  else if ((transfer?.paidCount || 0) > 0 && financeAmount > AUDIT_TOLERANCE && Math.abs(diff) <= AUDIT_TOLERANCE) {
+    flags.push("sem_taxa");
+  }
+  if (transferRows.length && financeRows.length && !sameName(first.name, financeRows[0]?.name)) {
+    flags.push("nome_diferente");
+  }
+  if ((transfer?.paidCount || 0) > 1) flags.push("duplicado");
+  // Devolucao sem valor nao diz nada: so etiqueta quando ha dinheiro voltando.
+  if ((transfer?.failedAmount || 0) > AUDIT_TOLERANCE) flags.push("devolvido");
+  if (transfer?.pendingCount) flags.push("pendente");
+  if (cpf && !financeCpfs.has(cpf)) flags.push("cpf_desconhecido");
+  if (transferRows.some((row) => row.dateSource === "lote")) flags.push("data_do_lote");
+
+  const severity = AUDIT_ISSUES[issue]?.severity || "atencao";
+
+  return {
+    issue,
+    severity,
+    severityRank: SEVERITY_ORDER[severity],
+    label: AUDIT_ISSUES[issue]?.label || issue,
+    flags,
+    financeDate,
+    transferDate: first.date || addDays(financeDate, 1),
+    cpf,
+    cpfMask: formatCpf(cpf),
+    transferName: first.name || "",
+    financeName: financeRows[0]?.name || known?.name || "",
+    city: financeRows[0]?.city || known?.city || "",
+    financeAmount,
+    transferAmount: paid,
+    failedAmount: transfer?.failedAmount || 0,
+    pendingAmount: transfer?.pendingAmount || 0,
+    diff,
+    risk,
+    pending,
+    transferStatus: uniq(transferRows.map((row) => row.status)).join(", "),
+    reason: uniq(transferRows.map((row) => row.reason)).join(", "),
+    batch: uniq(transferRows.map((row) => row.batch)).join(", "),
+    receipt: first.receipt || "",
+    transferRows: transferRows.length,
+    financeRows: financeRows.length,
+    transferFile: first.file || "",
+    financeFile: financeRows[0]?.file || "",
+  };
+}
+
+function withinRange(date, start, end) {
+  if (start && date < start) return false;
+  if (end && date > end) return false;
+  return true;
+}
+
+// ── Promocoes ─────────────────────────────────────────────────────────────────
+// Valores digitados na mao (nao vem de xlsx), guardados como { data: { cidade: valor } }.
+
+function promotionsFilePath() {
+  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "promocoes.json");
+  return path.join(__dirname, "promocoes.json");
+}
+
+function readPromotions() {
+  const file = promotionsFilePath();
+  if (!fs.existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePromotions(store) {
+  fs.writeFileSync(promotionsFilePath(), JSON.stringify(store, null, 2), "utf8");
+}
+
+function buildPromotions(query) {
+  const store = readPromotions();
+  const start = query.start || "";
+  const end = query.end || "";
+
+  const allDates = Object.keys(store).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)).sort();
+
+  const rows = allDates
+    .filter((date) => withinRange(date, start, end))
+    .map((date) => {
+      const values = {};
+      let total = 0;
+      for (const city of cityOrder) {
+        const value = Number(store[date]?.[city]) || 0;
+        values[city] = value;
+        total += value;
+      }
+      return { date, dateBr: brDate(parseDate(date)), values, total };
+    });
+
+  const totals = {};
+  for (const city of cityOrder) {
+    totals[city] = rows.reduce((sumValue, row) => sumValue + row.values[city], 0);
+  }
+
+  const byWeek = [...groupBy(rows, (row) => weekStartIso(row.date)).entries()]
+    .map(([weekStart, weekRows]) => ({
+      weekStart,
+      label: `${shortBr(weekStart)}-${shortBr(addDays(weekStart, 6))}`,
+      total: weekRows.reduce((sumValue, row) => sumValue + row.total, 0),
+    }))
+    .sort((a, b) => a.weekStart.localeCompare(b.weekStart));
+
+  return {
+    cities: cityOrder,
+    rows,
+    totals,
+    byWeek,
+    grandTotal: rows.reduce((sumValue, row) => sumValue + row.total, 0),
+    daysWithValue: rows.filter((row) => row.total > 0).length,
+    start: rows[0]?.date || "",
+    end: rows.at(-1)?.date || "",
+    // Dias lancados que o filtro de data esta escondendo.
+    outsideRange: allDates.length - rows.length,
+    storedStart: allDates[0] || "",
+    storedEnd: allDates.at(-1) || "",
+  };
+}
+
+function buildTransferAudit(query) {
+  const start = query.start || "";
+  const end = query.end || "";
+  const finance = buildFinanceIndex();
+  const transfer = buildTransferIndex();
+
+  const allDates = [...new Set([...finance.dates, ...transfer.dates])]
+    .filter((date) => withinRange(date, start, end))
+    .sort();
+
+  const rows = [];
+  const okRows = [];
+  const days = [];
+  let riskAmount = 0;
+  let pendingAmount = 0;
+  let blockedAmount = 0;
+  let notSentAmount = 0;
+  let okCount = 0;
+  let criticalCount = 0;
+  let attentionCount = 0;
+  let checked = 0;
+  let feeCount = 0;
+  let feeAmount = 0;
+  let noFeeCount = 0;
+  let noFeeAmount = 0;
+  let nameDiffCount = 0;
+
+  for (const date of allDates) {
+    const hasFinance = finance.dates.has(date);
+    const hasTransfer = transfer.dates.has(date);
+    const day = {
+      financeDate: date,
+      transferDate: addDays(date, 1),
+      status: hasFinance && hasTransfer ? "auditado" : hasTransfer ? "sem_financeiro" : "sem_transfeera",
+      financeAmount: 0,
+      transferAmount: 0,
+      financeDrivers: 0,
+      transferCount: 0,
+      critico: 0,
+      atencao: 0,
+      ok: 0,
+      risk: 0,
+    };
+
+    const dayKeys = new Set([
+      ...(finance.keysByDate.get(date) || []),
+      ...(transfer.keysByDate.get(date) || []),
+    ]);
+
+    for (const key of dayKeys) {
+      const financeGroup = finance.groups.get(key);
+      const transferGroup = transfer.groups.get(key);
+      day.financeAmount += financeGroup?.amount || 0;
+      day.transferAmount += transferGroup?.paid || 0;
+      if (financeGroup) day.financeDrivers += 1;
+      if (transferGroup) day.transferCount += transferGroup.rows.length;
+
+      // Dia sem par nao gera divergencia por CPF: falta base para comparar.
+      if (day.status !== "auditado") continue;
+
+      const issue = classifyAudit(financeGroup, transferGroup);
+      const row = buildAuditRow(issue, financeGroup, transferGroup, date, finance.cpfs, finance.byCpf);
+      checked += 1;
+      day[row.severity] += 1;
+      if (row.flags.includes("taxa_transfeera")) {
+        feeCount += 1;
+        feeAmount += -row.diff;
+      }
+      if (row.flags.includes("sem_taxa")) {
+        noFeeCount += 1;
+        noFeeAmount += row.transferAmount;
+      }
+      if (row.flags.includes("nome_diferente")) nameDiffCount += 1;
+      if (issue === "ok") {
+        okCount += 1;
+        okRows.push(row);
+        continue;
+      }
+      if (row.severity === "critico") criticalCount += 1;
+      else attentionCount += 1;
+      riskAmount += row.risk;
+      pendingAmount += row.pending;
+      day.risk += row.risk;
+      rows.push(row);
+    }
+
+    // Pagamentos sem CPF sempre viram alerta: nao da para casar com o financeiro.
+    for (const item of transfer.noCpfByDate.get(date) || []) {
+      const paid = item.statusKind === "pago" ? Number(item.value) || 0 : 0;
+      const issue = paid > AUDIT_TOLERANCE ? "pagamento_sem_cpf" : "pagamento_falhou";
+      const row = {
+        issue,
+        severity: AUDIT_ISSUES[issue].severity,
+        severityRank: SEVERITY_ORDER[AUDIT_ISSUES[issue].severity],
+        label: AUDIT_ISSUES[issue].label,
+        flags: item.statusKind === "falhou" ? ["devolvido", "sem_cpf"] : ["sem_cpf"],
+        financeDate: date,
+        transferDate: item.date,
+        cpf: "",
+        cpfMask: "sem CPF",
+        transferName: item.name || "",
+        financeName: "",
+        city: "",
+        financeAmount: 0,
+        transferAmount: paid,
+        failedAmount: item.statusKind === "falhou" ? Number(item.value) || 0 : 0,
+        pendingAmount: item.statusKind === "pendente" ? Number(item.value) || 0 : 0,
+        diff: paid,
+        risk: paid,
+        pending: 0,
+        transferStatus: item.status,
+        reason: item.reason,
+        batch: item.batch,
+        receipt: item.receipt,
+        transferRows: 1,
+        financeRows: 0,
+        transferFile: item.file,
+        financeFile: "",
+      };
+      day[row.severity] += 1;
+      day.transferCount += 1;
+      day.transferAmount += paid;
+      if (row.severity === "critico") criticalCount += 1;
+      else attentionCount += 1;
+      riskAmount += row.risk;
+      day.risk += row.risk;
+      rows.push(row);
+    }
+
+    if (day.status === "sem_financeiro") blockedAmount += day.transferAmount;
+    if (day.status === "sem_transfeera") notSentAmount += day.financeAmount;
+    days.push(day);
+  }
+
+  const orphanTransfers = transfer.noDate
+    .filter((row) => row.statusKind !== "falhou" || Number(row.value) > 0)
+    .map((row) => ({
+      name: row.name,
+      cpf: row.cpf,
+      cpfMask: formatCpf(row.cpf) || "sem CPF",
+      value: Number(row.value) || 0,
+      status: row.status,
+      reason: row.reason,
+      batch: row.batch,
+      file: row.file,
+    }));
+
+  const blockedDays = days.filter((day) => day.status === "sem_financeiro");
+  const pendingDays = days.filter((day) => day.status === "sem_transfeera");
+  const auditedDays = days.filter((day) => day.status === "auditado");
+
+  let verdict = "sem_dados";
+  if (criticalCount > 0 || blockedDays.length > 0 || orphanTransfers.length > 0) verdict = "alerta";
+  else if (attentionCount > 0) verdict = "atencao";
+  else if (auditedDays.length > 0) verdict = "ok";
+
+  rows.sort((a, b) => (SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+    || (b.risk - a.risk)
+    || a.financeDate.localeCompare(b.financeDate)
+    || Math.abs(b.diff) - Math.abs(a.diff));
+
+  return {
+    summary: {
+      verdict,
+      checked,
+      ok: okCount,
+      divergent: rows.length,
+      criticalCount,
+      attentionCount,
+      riskAmount,
+      pendingAmount,
+      blockedAmount,
+      notSentAmount,
+      auditedDays: auditedDays.length,
+      blockedDays: blockedDays.length,
+      pendingDays: pendingDays.length,
+      orphanTransfers: orphanTransfers.length,
+      orphanAmount: orphanTransfers.reduce((total, item) => total + item.value, 0),
+      financeAmount: auditedDays.reduce((total, day) => total + day.financeAmount, 0),
+      transferAmount: auditedDays.reduce((total, day) => total + day.transferAmount, 0),
+      financeRows: financeData.length,
+      transferRows: transferData.length,
+      financeWithoutCpf: finance.withoutCpf,
+      financeDuplicated: finance.duplicated,
+      transferDuplicated: transfer.duplicated,
+      feeCount,
+      feeAmount,
+      feePerTransfer: TRANSFEERA_FEE,
+      noFeeCount,
+      noFeeAmount,
+      nameDiffCount,
+      start: allDates[0] || "",
+      end: allDates.at(-1) || "",
+    },
+    days,
+    orphanTransfers,
+    // Divergencias primeiro; as conciliadas vao no fim para o filtro "Conciliado".
+    rows: [
+      ...rows.slice(0, 2000),
+      ...okRows.sort((a, b) => b.transferAmount - a.transferAmount).slice(0, 1500),
+    ],
+    truncated: Math.max(0, rows.length - 2000),
+    okTruncated: Math.max(0, okRows.length - 1500),
   };
 }
 
@@ -689,6 +1445,7 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     operationalRows: data.length,
     financialRows: financeData.length,
+    transferRows: transferData.length,
     supabase: supabase.enabled,
   });
 });
@@ -701,6 +1458,7 @@ app.get("/api/meta", (req, res) => {
     sourcePath: path.relative(__dirname, BI_DIR) || "BI",
     fileCount: sourceFiles.length,
     financeRowCount: financeData.length,
+    transferRowCount: transferData.length,
     loadedAt: loadedAt.toISOString(),
     latestSourceUpdate: latestSourceUpdate()?.toISOString() || "",
     cities: cityOrder.filter((city) => filterRowsExcept(query, "city").some((row) => row.city === city)),
@@ -714,6 +1472,8 @@ app.get("/api/meta", (req, res) => {
     maxDate: data.map((row) => row.date).sort().at(-1) || "",
     financeMinDate: financeData.map((row) => row.date).filter(Boolean).sort()[0] || "",
     financeMaxDate: financeData.map((row) => row.date).filter(Boolean).sort().at(-1) || "",
+    transferMinDate: transferData.map((row) => row.date).filter(Boolean).sort()[0] || "",
+    transferMaxDate: transferData.map((row) => row.date).filter(Boolean).sort().at(-1) || "",
   });
 });
 
@@ -723,6 +1483,7 @@ app.post("/api/reload", supabase.authorize("atualizar_bi", "atualizar_bi_finance
     ok: true,
     rowCount: data.length,
     financeRowCount: financeData.length,
+    transferRowCount: transferData.length,
     fileCount: sourceFiles.length,
     loadedAt: loadedAt.toISOString(),
     latestSourceUpdate: latestSourceUpdate()?.toISOString() || "",
@@ -747,6 +1508,7 @@ app.post("/api/upload-bi", supabase.authorize("atualizar_bi", "atualizar_bi_fina
     target,
     rowCount: data.length,
     financeRowCount: financeData.length,
+    transferRowCount: transferData.length,
     fileCount: sourceFiles.length,
     loadedAt: loadedAt.toISOString(),
   });
@@ -768,6 +1530,7 @@ app.delete("/api/bi-files", supabase.authorize("atualizar_bi", "atualizar_bi_fin
     ok: true,
     rowCount: data.length,
     financeRowCount: financeData.length,
+    transferRowCount: transferData.length,
     fileCount: sourceFiles.length,
     loadedAt: loadedAt.toISOString(),
   });
@@ -780,7 +1543,51 @@ app.get("/api/dashboard", supabase.authorize("kpis", "cadastro"), (req, res) => 
 
 app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
   const rows = filterFinanceRows(req.query);
-  res.json(buildFinance(rows));
+  res.json(buildFinance(rows, req.query));
+});
+
+app.get("/api/transfer-audit", supabase.authorize("financeiro"), (req, res) => {
+  res.json(buildTransferAudit(req.query));
+});
+
+app.get("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+  res.json(buildPromotions(req.query));
+});
+
+app.post("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+  const date = String(req.body.date || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Informe uma data valida." });
+  const store = readPromotions();
+  if (store[date]) return res.status(409).json({ error: "Essa data ja esta na tabela." });
+  store[date] = {};
+  writePromotions(store);
+  res.json(buildPromotions(req.query));
+});
+
+app.put("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+  const date = String(req.body.date || "");
+  const city = normalizeCity(req.body.city);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Data invalida." });
+  if (!cityOrder.includes(city)) return res.status(400).json({ error: "Cidade invalida." });
+
+  const value = toNumber(req.body.value);
+  if (!Number.isFinite(value) || value < 0) return res.status(400).json({ error: "Valor invalido." });
+
+  const store = readPromotions();
+  store[date] = store[date] || {};
+  if (value === 0) delete store[date][city];
+  else store[date][city] = Number(value.toFixed(2));
+  writePromotions(store);
+  res.json(buildPromotions(req.query));
+});
+
+app.delete("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+  const date = String(req.query.date || "");
+  const store = readPromotions();
+  if (!store[date]) return res.status(404).json({ error: "Data nao encontrada." });
+  delete store[date];
+  writePromotions(store);
+  res.json(buildPromotions(req.query));
 });
 
 app.get("/api/daily-result", supabase.authorize("kpis", "cadastro"), (req, res) => {

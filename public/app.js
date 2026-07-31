@@ -7,6 +7,8 @@ const state = {
   meta: null,
   dashboard: null,
   finance: null,
+  transferAudit: null,
+  promotions: null,
   dailyResult: null,
   user: null,
   users: [],
@@ -16,10 +18,15 @@ const state = {
   refreshToken: "",
   pendingFirstAccessEmail: "",
   pendingForgotEmail: "",
+  auditFilter: { status: "problemas", search: "" },
+  // A conferencia dia a dia cresce um cartao por relatorio importado: sem filtro
+  // proprio a lista viraria uma parede de cartoes.
+  auditDayFilter: { status: "todos", month: "todos", search: "", order: "desc", expanded: false },
   tableSort: {
     hotzones: { key: "city", direction: "asc" },
     drivers: { key: "city", direction: "asc" },
     financeDrivers: { key: "totalDaily", direction: "desc" },
+    auditRows: { key: "risk", direction: "desc" },
   },
 };
 
@@ -48,6 +55,24 @@ const fmtDate = (value) => value
 const normalizeText = (value) => String(value ?? "")
   .normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "");
+
+// Rotulo em cima de cada coluna: com muitas colunas o valor cheio nao cabe, entao
+// encurta ("R$ 66,8 mil") e o exato continua no hover e na tabela.
+const fmtMoneyShort = (value) => {
+  const abs = Math.abs(value || 0);
+  const compact = (divisor, suffix) => `R$ ${((value || 0) / divisor)
+    .toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ${suffix}`;
+  if (abs >= 1000000) return compact(1000000, "mi");
+  if (abs >= 1000) return compact(1000, "mil");
+  return fmtMoney(value);
+};
+
+// Percentual comparativo com a coluna anterior, sempre no mesmo formato.
+function changePill(change, baseLabel = "base") {
+  if (change === null || change === undefined) return `<em class="flat">${baseLabel}</em>`;
+  const up = change >= 0;
+  return `<em class="${up ? "up" : "down"}">${up ? "\u25b2" : "\u25bc"} ${fmtPct(Math.abs(change))}</em>`;
+}
 
 function pctClass(value) {
   if (value >= 0.9) return "good";
@@ -120,7 +145,7 @@ function hasUploadAccess(user) {
 function canUploadTarget(user, target) {
   if (state.authMode === "local") return true;
   if (user?.role === "admin" || normalizeEmail(user?.email) === FULL_ACCESS_EMAIL) return true;
-  return target === "FINANCEIRO"
+  return ["FINANCEIRO", "TRANSFEERA"].includes(target)
     ? Boolean(user?.permissions?.atualizar_bi_financeiro)
     : Boolean(user?.permissions?.atualizar_bi);
 }
@@ -165,6 +190,8 @@ function showLogin() {
   $("loginForm").classList.remove("hidden");
   $("loginPassword").value = "";
   document.querySelector(".finance-link").classList.add("hidden");
+  document.querySelector(".audit-link").classList.add("hidden");
+  document.querySelector(".promo-link").classList.add("hidden");
   document.querySelector(".users-link").classList.add("hidden");
   document.querySelector(".upload-link").classList.add("hidden");
   setLoginMessage("");
@@ -208,6 +235,8 @@ function applyUserAccess() {
   const localMode = state.authMode === "local";
   document.querySelector(".side-group").classList.toggle("hidden", !canSeeOperational);
   document.querySelector(".finance-link").classList.toggle("hidden", !canSeeFinance);
+  document.querySelector(".audit-link").classList.toggle("hidden", !canSeeFinance);
+  document.querySelector(".promo-link").classList.toggle("hidden", !canSeeFinance);
   document.querySelector(".users-link").classList.toggle("hidden", !canManageUsers);
   document.querySelector(".upload-link").classList.toggle("hidden", !canUpload);
   applyUploadCardAccess();
@@ -216,6 +245,8 @@ function applyUserAccess() {
   document.querySelector('[data-op-page="resultado"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.kpis && !permissions.cadastro);
   $("refreshDataButton").classList.toggle("hidden", !localMode && !permissions.atualizar_bi);
   if (!canSeeFinance && state.view === "financeiro") setOperationalPage("kpis");
+  if (!canSeeFinance && state.view === "auditoria") setOperationalPage("kpis");
+  if (!canSeeFinance && state.view === "promocoes") setOperationalPage("kpis");
   if (!canManageUsers && state.view === "usuarios") setOperationalPage("kpis");
   if (!canUpload && state.view === "upload") setOperationalPage("kpis");
 }
@@ -261,9 +292,24 @@ function financeQueryParams() {
   return params.toString();
 }
 
-async function getJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Erro ao carregar ${url}`);
+// A auditoria compara Transfeera x financeiro por CPF: filtrar por cidade
+// esconderia justamente os pagamentos que nao existem no financeiro.
+function auditQueryParams() {
+  const params = new URLSearchParams();
+  ["start", "end"].forEach((id) => {
+    if ($(id).value) params.set(id, $(id).value);
+  });
+  return params.toString();
+}
+
+async function getJson(url, options = {}) {
+  const response = await fetch(url, options.method
+    ? { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } }
+    : options);
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || `Erro ao carregar ${url}`);
+  }
   return response.json();
 }
 
@@ -325,8 +371,8 @@ async function authJson(url, options = {}) {
   return data;
 }
 
-function dataJson(url) {
-  return state.supabaseEnabled ? authJson(url) : getJson(url);
+function dataJson(url, options = {}) {
+  return state.supabaseEnabled ? authJson(url, options) : getJson(url, options);
 }
 
 async function loadMeta() {
@@ -434,10 +480,15 @@ function resetSearchSelect(filterId) {
 
 function clearFilters() {
   ["city", "hotzone", "cpf", "id", "name", "week", "shift"].forEach(resetSearchSelect);
-  const finance = state.view === "financeiro";
+  const finance = ["financeiro", "auditoria", "promocoes"].includes(state.view);
   $("start").value = finance ? state.meta?.financeMinDate || "" : state.meta?.minDate || "";
   $("end").value = finance ? state.meta?.financeMaxDate || "" : state.meta?.maxDate || "";
+  state.auditFilter = { status: "problemas", search: "" };
+  state.auditDayFilter = { status: "todos", month: "todos", search: "", order: "desc", expanded: false };
+  $("auditSearch").value = "";
+  $("auditDaySearch").value = "";
   refresh();
+  if (state.view === "promocoes") loadPromotions();
   updateFilterOptions();
 }
 
@@ -484,13 +535,16 @@ async function refresh() {
   const params = queryParams();
   const canLoadOperational = !state.supabaseEnabled || hasOperationalAccess(state.user);
   const canLoadFinance = !state.supabaseEnabled || hasFinancialAccess(state.user);
-  const [dashboard, finance, dailyResult] = await Promise.all([
+  const financeParams = financeQueryParams();
+  const [dashboard, finance, transferAudit, dailyResult] = await Promise.all([
     canLoadOperational ? dataJson(`/api/dashboard?${params}`) : Promise.resolve(null),
-    canLoadFinance ? dataJson(`/api/finance?${financeQueryParams()}`) : Promise.resolve(null),
+    canLoadFinance ? dataJson(`/api/finance?${financeParams}`) : Promise.resolve(null),
+    canLoadFinance ? dataJson(`/api/transfer-audit?${auditQueryParams()}`) : Promise.resolve(null),
     canLoadOperational ? dataJson(`/api/daily-result?${params}`) : Promise.resolve(null),
   ]);
   state.dashboard = dashboard;
   state.finance = finance;
+  state.transferAudit = transferAudit;
   state.dailyResult = dailyResult;
   render();
 }
@@ -644,12 +698,16 @@ function renderFinance() {
       <span>${helper}</span>
     </article>`).join("");
 
+  renderProfitMin(finance.profit);
+
   $("financeProjections").innerHTML = finance.projections.map((item) => `
-    <article class="projection-card">
+    <article class="projection-card ${item.gain < 0 ? "negative" : ""}">
       <small>GANHO RECEBA</small>
       <strong>${item.label}</strong>
       <b>${fmtMoney(item.gain)}</b>
-      <span>sobre ganhos + recompensas</span>
+      <span>${item.promotions
+        ? `${fmtMoney(item.gross)} menos ${fmtMoney(item.promotions)} de promocao`
+        : "sobre ganhos + recompensas"}</span>
     </article>`).join("");
 
   const maxComposition = Math.max(1, ...finance.composition.map((item) => Math.abs(item.value)));
@@ -667,16 +725,193 @@ function renderFinance() {
       <small>Base ganhos: ${fmtMoney(row.earningsBase)} | 20% Receba: ${fmtMoney(row.gain20)} | Entregadores: ${fmtInt(row.drivers)}</small>
     </article>`).join("") : `<div class="finance-empty-state">Coloque o arquivo financeiro na pasta BI para carregar os valores.</div>`;
 
-  const maxDay = Math.max(1, ...finance.byDate.map((row) => row.totalDaily));
-  $("financeDayGrid").innerHTML = finance.byDate.slice(-12).map((row) => `
-    <article>
-      <b style="height:${Math.max(8, row.totalDaily / maxDay * 100)}%"></b>
-      <strong>${fmtMoney(row.totalDaily)}</strong>
-      <span>${row.dateBr}</span>
-      <small>20% ganhos ${fmtMoney(row.gain20)}</small>
-    </article>`).join("") || `<div class="finance-empty-state">Sem datas financeiras carregadas.</div>`;
+  renderPromoSummary(finance.total);
+  renderWeeklyRevenue(finance.byWeek || []);
+
+  renderFinanceDays(finance.byDate || []);
 
   renderFinanceDrivers();
+}
+
+// Evolucao dia a dia: valor e comparativo com o dia anterior no topo da coluna.
+function renderFinanceDays(byDate) {
+  const days = byDate.slice(-12);
+  if (!days.length) {
+    $("financeDayGrid").innerHTML = `<div class="finance-empty-state">Sem datas financeiras carregadas.</div>`;
+    return;
+  }
+
+  const max = Math.max(1, ...days.map((row) => row.totalDaily));
+  const money = days.length > 8 ? fmtMoneyShort : fmtMoney;
+  // Poucos dias no filtro nao devem deixar as colunas encostadas na esquerda:
+  // uma coluna por dia, distribuidas na largura do painel.
+  $("financeDayGrid").style.gridTemplateColumns = `repeat(${days.length}, minmax(0, 1fr))`;
+
+  $("financeDayGrid").innerHTML = days.map((row) => {
+    const tooltip = [
+      row.dateBr,
+      `Total: ${fmtMoney(row.totalDaily)}`,
+      `20% ganhos: ${fmtMoney(row.gain20)}`,
+      row.promotions ? `Promocao interna: ${fmtMoney(row.promotions)}` : "",
+      row.change === null
+        ? "Primeiro dia do periodo"
+        : `${row.change >= 0 ? "+" : ""}${fmtPct(row.change)} vs ${row.previousDateBr || "dia anterior"}`,
+    ].filter(Boolean).join("\n");
+
+    return `
+      <article title="${escapeHtml(tooltip)}">
+        <div class="finance-day-value">
+          <strong>${money(row.totalDaily)}</strong>
+          ${changePill(row.change, "1o dia")}
+        </div>
+        <b style="height:${Math.max(6, row.totalDaily / max * 100)}%"></b>
+        <span>${row.dateBr}</span>
+        <small>20% ganhos ${fmtMoney(row.gain20)}</small>
+      </article>`;
+  }).join("");
+}
+
+// Cores validadas contra o painel escuro (#303030): laranja e azul da marca.
+const REVENUE_SERIES = [
+  { key: "netOfPromotions", label: "Sem promocao", color: "var(--orange)" },
+  { key: "promotions", label: "Promocao interna", color: "var(--blue)" },
+];
+
+function renderPromoSummary(total) {
+  const promotions = total.promotions || 0;
+  $("financePromoSummary").innerHTML = `
+    <article class="promo-summary-card">
+      <small>TOTAL COM PROMOCAO</small>
+      <strong>${fmtMoney(total.totalDaily)}</strong>
+      <span>Faturamento bruto do periodo</span>
+    </article>
+    <span class="promo-summary-op">-</span>
+    <article class="promo-summary-card promo">
+      <small>PROMOCOES INTERNAS</small>
+      <strong>${fmtMoney(promotions)}</strong>
+      <span>${promotions ? `${fmtPct(total.promotionShare)} do faturamento` : "Nenhuma promocao lancada no periodo"}</span>
+    </article>
+    <span class="promo-summary-op">=</span>
+    <article class="promo-summary-card net">
+      <small>TOTAL SEM PROMOCAO</small>
+      <strong>${fmtMoney(total.netOfPromotions)}</strong>
+      <span>Quanto ficou descontando as promocoes</span>
+    </article>`;
+}
+
+// Piso de lucro: o cenario mais baixo (10%) ja descontada a promocao,
+// dividido pelas entregas e pelos entregadores do periodo.
+function renderProfitMin(profit) {
+  if (!profit) return;
+  const negative = profit.net < 0;
+  const perOrder = profit.perOrder === null ? "--" : fmtMoney(profit.perOrder);
+  const perDriver = profit.perDriver === null ? "--" : fmtMoney(profit.perDriver);
+  const ordersNote = profit.orders
+    ? `${fmtInt(profit.orders)} entregas finalizadas`
+    : "sem entregas no BI operacional para este periodo";
+
+  $("financeProfitMin").innerHTML = `
+    <article class="profit-min-card ${negative ? "negative" : ""}">
+      <div class="profit-min-head">
+        <small>LUCRO MINIMO NO CENARIO DE ${profit.label}</small>
+        <strong>${fmtMoney(profit.net)}</strong>
+        <span>${fmtMoney(profit.gross)} de comissao menos a promocao investida</span>
+      </div>
+      <div class="profit-min-split">
+        <div>
+          <small>POR ENTREGA</small>
+          <b>${perOrder}</b>
+          <span>${ordersNote}</span>
+        </div>
+        <div>
+          <small>POR ENTREGADOR</small>
+          <b>${perDriver}</b>
+          <span>${fmtInt(profit.drivers)} entregadores com financeiro</span>
+        </div>
+      </div>
+      ${negative ? `<p class="profit-min-alert">A promocao consumiu toda a comissao neste cenario: no piso de ${profit.label} a operacao fecha no negativo.</p>` : ""}
+    </article>`;
+}
+
+function renderWeeklyRevenue(weeks) {
+  const chart = $("weeklyRevenueChart");
+  const hasPromotions = weeks.some((week) => week.promotions > 0);
+  const series = hasPromotions ? REVENUE_SERIES : REVENUE_SERIES.slice(0, 1);
+
+  // Uma serie nao precisa de legenda: o titulo do painel ja a nomeia.
+  $("weeklyRevenueLegend").innerHTML = hasPromotions
+    ? series.map((item) => `<span class="chart-legend-item"><i style="background:${item.color}"></i>${item.label}</span>`).join("")
+    : "";
+
+  if (!weeks.length) {
+    chart.innerHTML = `<div class="finance-empty-state">Sem semanas financeiras carregadas.</div>`;
+    $("weeklyRevenueTable").innerHTML = "";
+    return;
+  }
+
+  const max = Math.max(1, ...weeks.map((week) => week.totalDaily));
+  const ticks = [1, 0.75, 0.5, 0.25, 0];
+  const best = weeks.reduce((top, week) => (week.totalDaily > top.totalDaily ? week : top), weeks[0]);
+  // Com muitas semanas o valor cheio nao cabe no topo da coluna: encurta o rotulo.
+  const money = weeks.length > 8 ? fmtMoneyShort : fmtMoney;
+
+  const bars = weeks.map((week) => {
+    const net = Math.max(0, week.netOfPromotions);
+    const promo = Math.max(0, week.promotions);
+    const changeText = week.change === null
+      ? "primeira semana"
+      : `${week.change >= 0 ? "+" : ""}${fmtPct(week.change)} vs semana anterior`;
+    const tooltip = [
+      week.rangeBr,
+      `Total: ${fmtMoney(week.totalDaily)}`,
+      hasPromotions ? `Sem promocao: ${fmtMoney(week.netOfPromotions)}` : "",
+      hasPromotions ? `Promocao: ${fmtMoney(week.promotions)}` : "",
+      `Media/dia: ${fmtMoney(week.avgPerDay)} em ${fmtInt(week.activeDays)} dia(s)`,
+      `Entregadores: ${fmtInt(week.drivers)}`,
+      changeText,
+    ].filter(Boolean).join("\n");
+
+    return `
+      <div class="revenue-bar ${week === best ? "best" : ""}" tabindex="0" data-tooltip="${escapeHtml(tooltip)}">
+        <div class="revenue-bar-value">
+          <b>${money(week.totalDaily)}</b>
+          ${changePill(week.change, "1a semana")}
+        </div>
+        <div class="revenue-bar-stack">
+          ${promo > 0 ? `<span class="revenue-seg promo" style="height:${promo / max * 100}%"></span>` : ""}
+          <span class="revenue-seg net" style="height:${Math.max(1, net / max * 100)}%"></span>
+        </div>
+        <div class="revenue-bar-label">
+          <strong>${week.label}</strong>
+        </div>
+      </div>`;
+  }).join("");
+
+  chart.innerHTML = `
+    <div class="revenue-axis">${ticks.map((tick) => `<span style="bottom:${tick * 100}%">${fmtMoney(max * tick)}</span>`).join("")}</div>
+    <div class="revenue-plot">
+      ${ticks.map((tick) => `<i class="revenue-grid" style="bottom:${tick * 100}%"></i>`).join("")}
+      <div class="revenue-bars">${bars}</div>
+    </div>`;
+
+  $("weeklyRevenueTable").innerHTML = `
+    <table>
+      <thead><tr>
+        <th>SEMANA</th><th>PERIODO</th><th>TOTAL</th>
+        ${hasPromotions ? "<th>PROMOCAO</th><th>SEM PROMOCAO</th>" : ""}
+        <th>MEDIA/DIA</th><th>ENTREGADORES</th><th>VARIACAO</th>
+      </tr></thead>
+      <tbody>${weeks.map((week) => `
+        <tr>
+          <td>${week.label}</td>
+          <td>${week.rangeBr}</td>
+          <td class="num">${fmtMoney(week.totalDaily)}</td>
+          ${hasPromotions ? `<td class="num blue">${fmtMoney(week.promotions)}</td><td class="num">${fmtMoney(week.netOfPromotions)}</td>` : ""}
+          <td class="num">${fmtMoney(week.avgPerDay)}</td>
+          <td class="num">${fmtInt(week.drivers)}</td>
+          <td class="num ${week.change === null ? "" : week.change >= 0 ? "good" : "bad"}">${week.change === null ? "-" : `${week.change >= 0 ? "+" : ""}${fmtPct(week.change)}`}</td>
+        </tr>`).join("")}</tbody>
+    </table>`;
 }
 
 function renderFinanceDrivers() {
@@ -711,6 +946,626 @@ function renderFinanceDrivers() {
       ${sortHeader("financeDrivers", "gain20", "20% RECEBA")}
     </tr></thead>
     <tbody>${rows}</tbody>`;
+}
+
+const AUDIT_FLAG_LABELS = {
+  taxa_transfeera: "Taxa Transfeera",
+  sem_taxa: "Sem taxa Transfeera",
+  nome_diferente: "Nome diferente",
+  duplicado: "Pago 2x",
+  devolvido: "Devolvido",
+  pendente: "Nao liquidado",
+  cpf_desconhecido: "CPF fora do financeiro",
+  sem_cpf: "Sem CPF",
+  data_do_lote: "Data do lote",
+};
+
+// Um controle so, sem opcoes que dizem a mesma coisa: severidade ja aparece na
+// cor da linha e nos KPIs, entao aqui ficam os status concretos.
+// Devolvido so entra quando ha dinheiro voltando, e a taxa do Transfeera aparece
+// pelo avesso: o normal e ter taxa, a excecao (nao ter) e o que se procura.
+const AUDIT_STATUS_FILTERS = [
+  { value: "problemas", label: "So problemas", match: (row) => row.severity !== "ok" },
+  { value: "nao_pago", label: "Nao pago", match: (row) => row.issue === "nao_pago" },
+  { value: "valor_menor", label: "Pago a menos", match: (row) => row.issue === "valor_menor" },
+  { value: "valor_maior", label: "Pago a mais", match: (row) => row.issue === "valor_maior" },
+  { value: "nao_previsto", label: "Pago sem previsao", match: (row) => row.issue === "nao_previsto" || row.issue === "pagamento_sem_cpf" },
+  {
+    value: "pagamento_falhou",
+    label: "Devolvido / falhou",
+    match: (row) => row.issue === "pagamento_falhou"
+      && ((row.failedAmount || 0) > 0.01 || (row.transferAmount || 0) > 0.01),
+  },
+  { value: "conciliado", label: "Conciliado", match: (row) => row.issue === "ok" },
+  { value: "sem_taxa", label: "Sem taxa Transfeera", match: (row) => row.flags.includes("sem_taxa") },
+  { value: "nome", label: "Nome diferente", match: (row) => row.flags.includes("nome_diferente") },
+  { value: "tudo", label: "Tudo", match: () => true },
+];
+
+// Nome diferente com CPF e valor batendo: mostrar os dois nomes lado a lado e
+// marcar o que muda, senao a etiqueta obriga a abrir o relatorio para entender.
+function nameKeys(value) {
+  return new Set(normalizeText(String(value || "")).toUpperCase().split(/\s+/).filter(Boolean));
+}
+
+function highlightNameDiff(value, otherKeys) {
+  const tokens = String(value || "").trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return "<em>sem nome</em>";
+  return tokens
+    .map((token) => (otherKeys.has(normalizeText(token).toUpperCase())
+      ? escapeHtml(token)
+      : `<mark>${escapeHtml(token)}</mark>`))
+    .join(" ");
+}
+
+function auditNameCell(row) {
+  const finance = row.financeName || "";
+  const transfer = row.transferName || "";
+  if (!row.flags.includes("nome_diferente")) return escapeHtml(finance || transfer || "-");
+  return `
+    <div class="audit-name-diff">
+      <span><i>FIN</i>${highlightNameDiff(finance, nameKeys(transfer))}</span>
+      <span><i>TRANSF</i>${highlightNameDiff(transfer, nameKeys(finance))}</span>
+    </div>`;
+}
+
+function auditFlagLabel(row, flag) {
+  if (flag === "devolvido" && row.failedAmount > 0) return `Devolvido ${fmtMoney(row.failedAmount)}`;
+  if (flag === "pendente" && row.pendingAmount > 0) return `Nao liquidado ${fmtMoney(row.pendingAmount)}`;
+  return AUDIT_FLAG_LABELS[flag] || flag;
+}
+
+function auditSeverityClass(severity) {
+  if (severity === "critico") return "bad";
+  if (severity === "atencao") return "warn";
+  return "good";
+}
+
+function auditVisibleRows() {
+  const rows = state.transferAudit?.rows || [];
+  const term = normalizeText(state.auditFilter.search).toLowerCase().trim();
+  const digits = term.replace(/\D/g, "");
+  const status = AUDIT_STATUS_FILTERS.find((item) => item.value === state.auditFilter.status)
+    || AUDIT_STATUS_FILTERS[0];
+  return rows.filter((row) => {
+    if (!status.match(row)) return false;
+    if (!term) return true;
+    if (digits && row.cpf.includes(digits)) return true;
+    const names = normalizeText(`${row.transferName} ${row.financeName}`).toLowerCase();
+    return names.includes(term);
+  });
+}
+
+function renderAuditVerdict(summary) {
+  const verdict = summary.verdict || "sem_dados";
+  const copy = {
+    alerta: {
+      tone: "alerta",
+      icon: "!",
+      title: summary.criticalCount
+        ? `${fmtInt(summary.criticalCount)} pagamento(s) fora do financeiro`
+        : "Transfeera sem base para conferir",
+      detail: summary.criticalCount
+        ? `${fmtMoney(summary.riskAmount)} sairam do Transfeera sem lastro no relatorio financeiro.`
+        : `${fmtMoney(summary.blockedAmount)} pagos em dias sem relatorio financeiro carregado.`,
+    },
+    atencao: {
+      tone: "atencao",
+      icon: "~",
+      title: `${fmtInt(summary.attentionCount)} ponto(s) de atencao`,
+      detail: "Nada saiu a mais, mas ha valores nao pagos, pagos a menos ou com status pendente.",
+    },
+    ok: {
+      tone: "ok",
+      icon: "OK",
+      title: "Transfeera bate com o financeiro",
+      detail: `${fmtInt(summary.ok)} pagamentos conferidos em ${fmtInt(summary.auditedDays)} dia(s). Nenhum valor fora do relatorio.`,
+    },
+    sem_dados: {
+      tone: "neutro",
+      icon: "?",
+      title: "Nenhum dia com os dois relatorios",
+      detail: "Envie o financeiro do dia D e o Transfeera do dia D+1 para a conferencia rodar.",
+    },
+  }[verdict];
+
+  // Cada alerta e um cartao com o numero na frente e o motivo embaixo: da para
+  // varrer a linha inteira sem ler frase por frase.
+  const alerts = [];
+  if (summary.blockedDays) {
+    alerts.push({ tone: "bad", value: `${fmtInt(summary.blockedDays)} dia(s)`, label: "Pagou sem financeiro carregado", extra: fmtMoney(summary.blockedAmount) });
+  }
+  if (summary.orphanTransfers) {
+    alerts.push({ tone: "bad", value: `${fmtInt(summary.orphanTransfers)} pagamento(s)`, label: "Sem data no extrato do Transfeera", extra: fmtMoney(summary.orphanAmount) });
+  }
+  if (summary.pendingDays) {
+    alerts.push({ tone: "warn", value: `${fmtInt(summary.pendingDays)} dia(s)`, label: "Financeiro ainda sem Transfeera", extra: fmtMoney(summary.notSentAmount) });
+  }
+  if (summary.noFeeCount) {
+    alerts.push({ tone: "warn", value: `${fmtInt(summary.noFeeCount)} pagamento(s)`, label: `Sem a taxa de ${fmtMoney(summary.feePerTransfer)} do Transfeera`, extra: fmtMoney(summary.noFeeAmount) });
+  }
+  if (summary.financeWithoutCpf) {
+    alerts.push({ tone: "warn", value: `${fmtInt(summary.financeWithoutCpf)} linha(s)`, label: "Financeiro sem CPF, fora da conferencia" });
+  }
+  if (summary.nameDiffCount) {
+    alerts.push({ tone: "info", value: `${fmtInt(summary.nameDiffCount)} pagamento(s)`, label: "Nome diferente, CPF e valor conferindo" });
+  }
+  if (summary.financeDuplicated || summary.transferDuplicated) {
+    alerts.push({
+      tone: "info",
+      value: `${fmtInt((summary.financeDuplicated || 0) + (summary.transferDuplicated || 0))} linha(s)`,
+      label: `Arquivo repetido ignorado (${fmtInt(summary.financeDuplicated)} fin. / ${fmtInt(summary.transferDuplicated)} transf.)`,
+    });
+  }
+
+  const checked = summary.checked || 0;
+  const parts = [
+    { key: "crit", count: summary.criticalCount || 0, label: "critico(s)" },
+    { key: "warn", count: summary.attentionCount || 0, label: "atencao" },
+    { key: "ok", count: summary.ok || 0, label: "conciliado(s)" },
+  ];
+  const meter = checked
+    ? `
+    <div class="audit-verdict-meter">
+      <div class="audit-meter-bar">
+        ${parts.filter((part) => part.count).map((part) => `
+          <i class="${part.key}" style="width:${(part.count / checked * 100).toFixed(2)}%"></i>`).join("")}
+      </div>
+      <div class="audit-meter-legend">
+        ${parts.map((part) => `
+          <span class="${part.key} ${part.count ? "" : "zero"}"><b>${fmtInt(part.count)}</b> ${part.label}</span>`).join("")}
+        <em>de ${fmtInt(checked)} verificacao(oes) em ${fmtInt(summary.auditedDays)} dia(s)</em>
+      </div>
+    </div>`
+    : "";
+
+  const metrics = [
+    { tone: summary.riskAmount > 0 ? "bad" : "ok", label: "VALOR EM RISCO", value: fmtMoney(summary.riskAmount), helper: `${fmtInt(summary.criticalCount)} sem lastro no financeiro` },
+    { tone: summary.pendingAmount > 0 ? "warn" : "ok", label: "A REGULARIZAR", value: fmtMoney(summary.pendingAmount), helper: "Previsto e ainda nao pago" },
+    { tone: "neutro", label: "PERIODO", value: summary.start ? `${brDate(summary.start).slice(0, 5)} a ${brDate(summary.end).slice(0, 5)}` : "--", helper: summary.start ? `${brDate(summary.start)} a ${brDate(summary.end)}` : "Sem relatorio no filtro" },
+  ];
+
+  $("auditVerdict").className = `audit-verdict ${copy.tone}`;
+  $("auditVerdict").innerHTML = `
+    <div class="audit-verdict-main">
+      <span class="audit-verdict-icon">${copy.icon}</span>
+      <div>
+        <small>TRANSFEERA X FINANCEIRO</small>
+        <strong>${copy.title}</strong>
+        <span>${copy.detail}</span>
+      </div>
+    </div>
+    <div class="audit-verdict-side">
+      ${metrics.map((item) => `
+        <div class="audit-metric ${item.tone}">
+          <small>${item.label}</small>
+          <b>${item.value}</b>
+          <i>${item.helper}</i>
+        </div>`).join("")}
+    </div>
+    ${meter}
+    ${alerts.length ? `
+      <ul class="audit-verdict-alerts">
+        ${alerts.map((item) => `
+          <li class="audit-alert ${item.tone}">
+            <b>${item.value}</b>
+            <span>${item.label}</span>
+            ${item.extra ? `<em>${item.extra}</em>` : ""}
+          </li>`).join("")}
+      </ul>` : ""}`;
+}
+
+const AUDIT_DAY_FILTERS = [
+  { value: "todos", label: "Todos", match: () => true },
+  { value: "divergencia", label: "Com divergencia", match: (day) => day.status === "auditado" && (day.critico > 0 || day.atencao > 0) },
+  { value: "conciliado", label: "Conciliado", match: (day) => day.status === "auditado" && !day.critico && !day.atencao },
+  { value: "sem_financeiro", label: "Sem financeiro", match: (day) => day.status === "sem_financeiro" },
+  { value: "sem_transfeera", label: "Sem Transfeera", match: (day) => day.status === "sem_transfeera" },
+];
+
+const AUDIT_DAY_PAGE = 12;
+
+const MONTH_SHORT = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+function monthLabel(month) {
+  const [year, index] = month.split("-");
+  return `${MONTH_SHORT[Number(index) - 1] || index}/${year}`;
+}
+
+// Busca por dia aceita "08", "08/07" ou "08/07/2026", olhando as duas datas do cartao.
+function auditDayMatchesSearch(day, term) {
+  if (!term) return true;
+  const text = `${brDate(day.financeDate)} ${brDate(day.transferDate)}`;
+  if (text.includes(term)) return true;
+  const digits = term.replace(/\D/g, "");
+  return digits.length >= 2 && text.replace(/\D/g, "").includes(digits);
+}
+
+function auditDayTone(day) {
+  if (day.status === "sem_financeiro") return "alerta";
+  if (day.status === "sem_transfeera") return "neutro";
+  if (day.critico) return "alerta";
+  if (day.atencao) return "atencao";
+  return "ok";
+}
+
+function auditDayStatusLabel(day) {
+  if (day.status === "sem_financeiro") return "Sem financeiro";
+  if (day.status === "sem_transfeera") return "Sem Transfeera";
+  if (day.critico) return "Divergencia";
+  if (day.atencao) return "Atencao";
+  return "Conciliado";
+}
+
+function renderAuditDayToolbar(days, base) {
+  const filter = state.auditDayFilter;
+  const months = [...new Set(days.map((day) => day.financeDate.slice(0, 7)))].sort();
+  const order = filter.order === "asc" ? "asc" : "desc";
+
+  $("auditDayMonth").innerHTML = [
+    `<option value="todos" ${filter.month === "todos" ? "selected" : ""}>Todos (${fmtInt(days.length)} dias)</option>`,
+    ...months.map((month) => {
+      const count = days.filter((day) => day.financeDate.startsWith(month)).length;
+      return `<option value="${month}" ${filter.month === month ? "selected" : ""}>${monthLabel(month)} (${fmtInt(count)})</option>`;
+    }),
+  ].join("");
+
+  $("auditDayChips").innerHTML = AUDIT_DAY_FILTERS
+    .map((item) => ({ ...item, count: base.filter(item.match).length }))
+    .filter((item) => item.count > 0 || item.value === filter.status || item.value === "todos")
+    .map((item) => `
+      <button type="button" class="audit-chip audit-day-chip ${item.value} ${filter.status === item.value ? "active" : ""}" data-audit-day-status="${item.value}">
+        ${item.label}<b>${fmtInt(item.count)}</b>
+      </button>`).join("");
+
+  $("auditDayOrder").textContent = order === "desc" ? "Mais recentes" : "Mais antigos";
+  $("auditDayOrder").dataset.order = order;
+
+  const dirty = filter.status !== "todos" || filter.month !== "todos" || Boolean(filter.search);
+  $("auditDayClear").classList.toggle("hidden", !dirty);
+}
+
+function renderAuditDays(days) {
+  const filter = state.auditDayFilter;
+  const term = filter.search.trim();
+  // Mudar o periodo la em cima pode apagar o mes escolhido aqui: sem isso o
+  // painel ficaria vazio sem explicar o motivo.
+  if (filter.month !== "todos" && !days.some((day) => day.financeDate.startsWith(filter.month))) {
+    filter.month = "todos";
+  }
+
+  // Mes e busca valem para todos os chips; o chip de status filtra por cima.
+  const base = days.filter((day) => (filter.month === "todos" || day.financeDate.startsWith(filter.month))
+    && auditDayMatchesSearch(day, term));
+  renderAuditDayToolbar(days, base);
+
+  const status = AUDIT_DAY_FILTERS.find((item) => item.value === filter.status) || AUDIT_DAY_FILTERS[0];
+  const matched = base.filter(status.match)
+    .sort((a, b) => (filter.order === "asc" ? 1 : -1) * a.financeDate.localeCompare(b.financeDate));
+
+  if (!days.length) {
+    $("auditDays").innerHTML = `<div class="finance-empty-state">Nenhum dia carregado no periodo selecionado.</div>`;
+    $("auditDaysFooter").innerHTML = "";
+    return;
+  }
+  if (!matched.length) {
+    $("auditDays").innerHTML = `<div class="finance-empty-state">Nenhum dia com esse filtro. Ajuste o status, o mes ou a busca.</div>`;
+    $("auditDaysFooter").innerHTML = "";
+    return;
+  }
+
+  const visible = filter.expanded ? matched : matched.slice(0, AUDIT_DAY_PAGE);
+
+  $("auditDays").innerHTML = visible.map((day) => {
+    const tone = auditDayTone(day);
+    const active = $("start").value === day.financeDate && $("end").value === day.financeDate;
+    // Diferenca so faz sentido quando os dois relatorios existem: em dia sem par
+    // o numero seria o total inteiro e leria como divergencia gigante.
+    const diff = (day.transferAmount || 0) - (day.financeAmount || 0);
+    const audited = day.status === "auditado";
+    const diffTone = !audited ? "off" : Math.abs(diff) < 0.01 ? "" : diff > 0 ? "bad" : "warn";
+    const checked = (day.critico || 0) + (day.atencao || 0) + (day.ok || 0);
+    const bar = checked
+      ? `<div class="audit-day-meter">
+          ${[["crit", day.critico], ["warn", day.atencao], ["ok", day.ok]]
+            .filter(([, count]) => count > 0)
+            .map(([key, count]) => `<i class="${key}" style="width:${(count / checked * 100).toFixed(2)}%"></i>`).join("")}
+         </div>`
+      : "";
+    const note = day.status === "auditado"
+      ? `${fmtInt(day.critico)} critico(s) · ${fmtInt(day.atencao)} atencao · ${fmtInt(day.ok)} conciliado(s)`
+      : day.status === "sem_financeiro"
+        ? "Pagou sem relatorio financeiro"
+        : "Financeiro sem repasse importado";
+
+    return `
+      <button type="button" class="audit-day ${tone} ${active ? "active" : ""}" data-audit-day="${day.financeDate}">
+        <header>
+          <span class="audit-day-status">${auditDayStatusLabel(day)}</span>
+          ${!audited
+            ? ""
+            : diffTone
+              ? `<span class="audit-day-diff ${diffTone}">${diff > 0 ? "+" : "-"}${fmtMoney(Math.abs(diff))}</span>`
+              : `<span class="audit-day-diff ok">bate</span>`}
+        </header>
+        <div class="audit-day-dates">
+          <strong>FIN ${brDate(day.financeDate).slice(0, 5)}</strong>
+          <small>TRANSF ${brDate(day.transferDate).slice(0, 5)}</small>
+        </div>
+        <div class="audit-day-values">
+          <span><i>Financeiro</i><b>${fmtMoney(day.financeAmount)}</b></span>
+          <span><i>Pago</i><b>${fmtMoney(day.transferAmount)}</b></span>
+        </div>
+        ${bar}
+        <em>${note}</em>
+      </button>`;
+  }).join("");
+
+  const hidden = matched.length - visible.length;
+  $("auditDaysFooter").innerHTML = `
+    <span>Mostrando ${fmtInt(visible.length)} de ${fmtInt(matched.length)} dia(s)${matched.length !== days.length ? ` (${fmtInt(days.length)} no periodo)` : ""}</span>
+    ${hidden > 0 || filter.expanded
+      ? `<button type="button" class="audit-days-toggle" id="auditDaysToggle">${filter.expanded ? "Ver menos" : `Ver todos os ${fmtInt(matched.length)} dias`}</button>`
+      : ""}`;
+}
+
+function renderAuditStatusFilter() {
+  const rows = state.transferAudit?.rows || [];
+  const current = state.auditFilter.status;
+  const seen = new Set();
+  const options = [];
+
+  for (const item of AUDIT_STATUS_FILTERS) {
+    const matched = rows.reduce((list, row, index) => {
+      if (item.match(row)) list.push(index);
+      return list;
+    }, []);
+    const signature = matched.join(",");
+    const keep = item.value === current // a selecionada nunca desaparece
+      || (matched.length > 0 && !seen.has(signature));
+    if (!keep) continue;
+    seen.add(signature);
+    options.push({ ...item, count: matched.length });
+  }
+
+  $("auditStatus").innerHTML = options.map((item) => `
+    <option value="${item.value}" ${current === item.value ? "selected" : ""}>${item.label} (${fmtInt(item.count)})</option>`).join("");
+}
+
+// Alerta visivel de qualquer pagina: quantos itens criticos existem hoje.
+function renderAuditBadge(summary) {
+  const badge = $("auditBadge");
+  const blocking = (summary.criticalCount || 0) + (summary.blockedDays || 0) + (summary.orphanTransfers || 0);
+  badge.textContent = blocking > 99 ? "99+" : String(blocking);
+  badge.title = blocking ? `${fmtInt(summary.criticalCount || 0)} pagamento(s) sem lastro | ${fmtMoney(summary.riskAmount)} em risco` : "";
+  badge.classList.toggle("hidden", blocking === 0);
+}
+
+function renderAudit() {
+  if (!state.transferAudit) return;
+  const audit = state.transferAudit;
+  const summary = audit.summary || {};
+
+  renderAuditVerdict(summary);
+  renderAuditDays(audit.days || []);
+  renderAuditStatusFilter();
+  renderAuditBadge(summary);
+
+  $("auditPeriod").textContent = summary.start
+    ? `${brDate(summary.start)} a ${brDate(summary.end)} | ${fmtInt(summary.auditedDays)} dia(s) com os dois relatorios`
+    : "Sem periodo auditado";
+
+  $("auditKpis").innerHTML = [
+    ["VALOR EM RISCO", fmtMoney(summary.riskAmount), `${fmtInt(summary.criticalCount)} pagamento(s) sem lastro`, summary.riskAmount > 0 ? "bad" : "green"],
+    ["A PAGAR / A MENOS", fmtMoney(summary.pendingAmount), "Previsto no financeiro e ainda nao pago", "yellow"],
+    ["CONCILIADOS", fmtInt(summary.ok), `de ${fmtInt(summary.checked)} entregadores x dia`, "green"],
+    ["TOTAL FINANCEIRO", fmtMoney(summary.financeAmount), "Dias com os dois relatorios", "blue"],
+    ["TOTAL PAGO", fmtMoney(summary.transferAmount), "Liquidado no Transfeera nos mesmos dias", "orange"],
+  ].map(([label, value, helper, tone]) => `
+    <article class="finance-kpi ${tone}">
+      <small>${label}</small>
+      <strong>${value}</strong>
+      <span>${helper}</span>
+    </article>`).join("");
+
+  const visible = auditVisibleRows();
+  const statusLabel = AUDIT_STATUS_FILTERS.find((item) => item.value === state.auditFilter.status)?.label || "";
+  $("auditInfo").textContent = audit.truncated
+    ? `${fmtInt(visible.length)} em "${statusLabel}" | ${fmtInt(summary.divergent)} divergencias no total (${fmtInt(audit.truncated)} nao exibidas)`
+    : `${fmtInt(visible.length)} item(ns) em "${statusLabel}" | ${fmtInt(summary.divergent)} divergencia(s) e ${fmtInt(summary.ok)} conciliado(s) no periodo`;
+
+  const rows = sortedRows(visible, "auditRows").map((row) => {
+    // Pago sem nada no financeiro: as duas colunas de valor piscam.
+    const unbacked = row.issue === "nao_previsto" || row.issue === "pagamento_sem_cpf";
+    // Barrinhas na mesma escala mostram de relance qual lado e maior.
+    const scale = Math.max(row.financeAmount, row.transferAmount, 0.01);
+    const barWidth = (value) => `${Math.min(100, Math.max(value > 0 ? 4 : 0, value / scale * 100))}%`;
+
+    return `
+    <tr class="audit-row ${row.severity} ${unbacked ? "unbacked" : ""}">
+      <td>
+        <span class="audit-badge ${auditSeverityClass(row.severity)}">${escapeHtml(row.label)}</span>
+        ${row.flags.map((flag) => `<span class="audit-flag ${flag}">${auditFlagLabel(row, flag)}</span>`).join("")}
+      </td>
+      <td>${brDate(row.financeDate)}</td>
+      <td>${brDate(row.transferDate)}</td>
+      <td class="city-cell ${cityToneClass(row.city)}">${row.city || "-"}</td>
+      <td>${escapeHtml(row.cpfMask || "-")}</td>
+      <td>${auditNameCell(row)}</td>
+      <td class="num audit-amount ${unbacked ? "blink" : ""}">
+        <span>${fmtMoney(row.financeAmount)}</span>
+        <i class="audit-bar fin" style="width:${barWidth(row.financeAmount)}"></i>
+      </td>
+      <td class="num audit-amount ${unbacked ? "blink" : ""}">
+        <span>${fmtMoney(row.transferAmount)}</span>
+        <i class="audit-bar pago" style="width:${barWidth(row.transferAmount)}"></i>
+      </td>
+      <td class="num ${Math.abs(row.diff) >= 0.01 ? "bad" : ""}">${fmtMoney(row.diff)}</td>
+      <td class="num ${row.risk > 0 ? "bad" : ""}">${row.risk > 0 ? fmtMoney(row.risk) : "-"}</td>
+      <td>${escapeHtml([row.transferStatus, row.reason].filter(Boolean).join(" - ") || "-")}</td>
+      <td>${row.receipt ? `<a class="audit-receipt" href="${escapeHtml(row.receipt)}" target="_blank" rel="noopener">Ver</a>` : "-"}</td>
+    </tr>`;
+  }).join("");
+
+  $("auditTable").innerHTML = `
+    <thead><tr>
+      ${sortHeader("auditRows", "severityRank", "PROBLEMA")}
+      ${sortHeader("auditRows", "financeDate", "DATA FIN.")}
+      ${sortHeader("auditRows", "transferDate", "DATA TRANSF.")}
+      ${sortHeader("auditRows", "city", "CIDADE")}
+      ${sortHeader("auditRows", "cpf", "CPF / CNPJ")}
+      ${sortHeader("auditRows", "financeName", "ENTREGADOR")}
+      ${sortHeader("auditRows", "financeAmount", "FINANCEIRO")}
+      ${sortHeader("auditRows", "transferAmount", "PAGO")}
+      ${sortHeader("auditRows", "diff", "DIFERENCA")}
+      ${sortHeader("auditRows", "risk", "RISCO")}
+      ${sortHeader("auditRows", "transferStatus", "STATUS")}
+      <th>COMPROVANTE</th>
+    </tr></thead>
+    <tbody>${rows || `<tr><td colspan="12">Nada a corrigir com os filtros atuais.</td></tr>`}</tbody>`;
+}
+
+function exportAuditCsv() {
+  const rows = auditVisibleRows();
+  if (!rows.length) return;
+  const header = ["Problema", "Alertas", "Data financeiro", "Data Transfeera", "Cidade", "CPF/CNPJ", "Entregador financeiro", "Favorecido Transfeera", "Valor financeiro", "Valor pago", "Diferenca", "Risco", "Status", "Motivo", "Lote", "Comprovante"];
+  const body = rows.map((row) => [
+    row.label,
+    row.flags.map((flag) => AUDIT_FLAG_LABELS[flag] || flag).join(" / "),
+    brDate(row.financeDate),
+    brDate(row.transferDate),
+    row.city,
+    row.cpfMask,
+    row.financeName,
+    row.transferName,
+    row.financeAmount.toFixed(2).replace(".", ","),
+    row.transferAmount.toFixed(2).replace(".", ","),
+    row.diff.toFixed(2).replace(".", ","),
+    row.risk.toFixed(2).replace(".", ","),
+    row.transferStatus,
+    row.reason,
+    row.batch,
+    row.receipt,
+  ]);
+  const csv = [header, ...body]
+    .map((line) => line.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";"))
+    .join("\r\n");
+  const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `auditoria-transfeera-${state.transferAudit?.summary?.start || "periodo"}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Promocoes ─────────────────────────────────────────────────────────────────
+
+function promotionsQueryParams() {
+  const params = new URLSearchParams();
+  ["start", "end"].forEach((id) => {
+    if ($(id).value) params.set(id, $(id).value);
+  });
+  return params.toString();
+}
+
+// Amplia o filtro global de datas para caber a data informada.
+function widenDateFilterTo(date) {
+  let changed = false;
+  if (!$("start").value || date < $("start").value) {
+    $("start").value = date;
+    changed = true;
+  }
+  if (!$("end").value || date > $("end").value) {
+    $("end").value = date;
+    changed = true;
+  }
+  return changed;
+}
+
+function setPromoMessage(message, ok = false) {
+  $("promoMessage").textContent = message;
+  $("promoMessage").classList.toggle("ok", ok);
+  $("promoMessage").classList.toggle("hidden", !message);
+}
+
+async function loadPromotions() {
+  if (!hasFinancialAccess(state.user)) return;
+  try {
+    state.promotions = await dataJson(`/api/promotions?${promotionsQueryParams()}`);
+    renderPromotions();
+  } catch (error) {
+    setPromoMessage(error.message);
+  }
+}
+
+async function savePromotionCell(date, city, value) {
+  try {
+    state.promotions = await dataJson(`/api/promotions?${promotionsQueryParams()}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, city, value }),
+    });
+    renderPromotions();
+    setPromoMessage(`${city} em ${brDate(date)} salvo.`, true);
+    refresh(); // o financeiro geral precisa refletir a promocao na hora
+  } catch (error) {
+    setPromoMessage(error.message);
+    renderPromotions();
+  }
+}
+
+function renderPromotions() {
+  const data = state.promotions;
+  if (!data) return;
+  const cities = data.cities;
+
+  $("promoKpis").innerHTML = [
+    ["TOTAL EM PROMOCOES", fmtMoney(data.grandTotal), `${fmtInt(data.daysWithValue)} dia(s) com valor`, "yellow"],
+    ["DIAS LANCADOS", fmtInt(data.rows.length), data.start ? `${brDate(data.start)} a ${brDate(data.end)}` : "Nenhum dia ainda", "blue"],
+    ...cities.slice(0, 3).map((city) => [city, fmtMoney(data.totals[city]), "Total no periodo", "orange"]),
+  ].map(([label, value, helper, tone]) => `
+    <article class="finance-kpi ${tone}">
+      <small>${escapeHtml(label)}</small>
+      <strong>${value}</strong>
+      <span>${escapeHtml(helper)}</span>
+    </article>`).join("");
+
+  const hidden = data.outsideRange
+    ? ` | ${fmtInt(data.outsideRange)} dia(s) fora do filtro (${brDate(data.storedStart)} a ${brDate(data.storedEnd)} lancados)`
+    : "";
+  $("promoInfo").textContent = data.rows.length
+    ? `${fmtInt(data.rows.length)} dia(s) | total ${fmtMoney(data.grandTotal)}${hidden}`
+    : data.outsideRange
+      ? `Nenhum dia no periodo filtrado, mas ha ${fmtInt(data.outsideRange)} dia(s) lancado(s) entre ${brDate(data.storedStart)} e ${brDate(data.storedEnd)}. Ajuste as datas no topo.`
+      : "Adicione uma data para comecar a lancar os valores.";
+
+  const body = data.rows.map((row) => `
+    <tr>
+      <td class="promo-date">${row.dateBr}</td>
+      ${cities.map((city) => `
+        <td class="promo-cell">
+          <input type="text" inputmode="decimal" value="${row.values[city] ? row.values[city].toFixed(2).replace(".", ",") : ""}"
+            placeholder="0,00" data-promo-date="${row.date}" data-promo-city="${escapeHtml(city)}" />
+        </td>`).join("")}
+      <td class="num promo-total">${fmtMoney(row.total)}</td>
+      <td class="promo-actions"><button type="button" class="promo-remove" data-promo-remove="${row.date}" title="Excluir dia">×</button></td>
+    </tr>`).join("");
+
+  $("promoTable").innerHTML = `
+    <thead><tr>
+      <th>DATA</th>
+      ${cities.map((city) => `
+        <th class="promo-city-head"><span class="promo-city-mark ${cityToneClass(city)}"></span>${escapeHtml(city)}</th>`).join("")}
+      <th>TOTAL</th>
+      <th></th>
+    </tr></thead>
+    <tbody>${body || `<tr><td colspan="${cities.length + 3}">Nenhuma data lancada no periodo.</td></tr>`}</tbody>
+    <tfoot><tr>
+      <td>TOTAL</td>
+      ${cities.map((city) => `<td class="num">${fmtMoney(data.totals[city])}</td>`).join("")}
+      <td class="num promo-total">${fmtMoney(data.grandTotal)}</td>
+      <td></td>
+    </tr></tfoot>`;
 }
 
 const permissionLabels = {
@@ -974,6 +1829,7 @@ function render() {
     renderWeeklyCharts("cadastroWeeklyCharts");
   }
   if (state.finance) renderFinance();
+  if (state.transferAudit) renderAudit();
   renderDailyResult();
 }
 
@@ -1036,11 +1892,11 @@ function renderDailyResult() {
         <h2 class="city-cell ${cityToneClass(group.city)}">${group.city}</h2>
         <span>${group.top.length + group.rest.length} entregadores no periodo</span>
       </div>
-      <h3 class="daily-result-subhead">Top 10 melhores</h3>
+      <h3 class="daily-result-subhead">Top 10 em corridas finalizadas</h3>
       <div class="table-wrap">
-        <table>
-          ${dailyResultTableHead(false)}
-          <tbody>${group.top.map((driver, index) => dailyResultRow(driver, index + 1, false)).join("") || `<tr><td colspan="10">Sem dados no periodo.</td></tr>`}</tbody>
+        <table class="expandable-table">
+          ${dailyResultTableHead(true)}
+          <tbody>${group.top.map((driver, index) => `${dailyResultRow(driver, index + 1, true)}${dailyResultShiftRow(driver, 11)}`).join("") || `<tr><td colspan="11">Sem dados no periodo.</td></tr>`}</tbody>
         </table>
       </div>
       ${group.rest.length ? `
@@ -1063,8 +1919,12 @@ function configureFiltersForView(view) {
   filters.classList.remove("hidden");
   document.querySelectorAll("[data-filter-control]").forEach((element) => {
     const control = element.dataset.filterControl;
-    const visible = view === "operacional" || ["city", "start", "end", "actions"].includes(control);
-    element.classList.toggle("hidden", !visible);
+    const allowed = view === "operacional"
+      ? null
+      : view === "auditoria" || view === "promocoes"
+        ? ["start", "end", "actions"]
+        : ["city", "start", "end", "actions"];
+    element.classList.toggle("hidden", Boolean(allowed) && !allowed.includes(control));
   });
 }
 
@@ -1080,6 +1940,14 @@ function applyFinanceDateDefaults() {
 
 function setView(view) {
   if (view === "financeiro" && !hasFinancialAccess(state.user)) {
+    setOperationalPage(state.opPage || "kpis");
+    return;
+  }
+  if (view === "auditoria" && !hasFinancialAccess(state.user)) {
+    setOperationalPage(state.opPage || "kpis");
+    return;
+  }
+  if (view === "promocoes" && !hasFinancialAccess(state.user)) {
     setOperationalPage(state.opPage || "kpis");
     return;
   }
@@ -1107,6 +1975,16 @@ function setView(view) {
       title: "Dash Financeiro",
       subtitle: "Financeiro por cidade e periodo, com total ganho, dinheiro pendente e projecao de ganhos de 10% a 30%.",
     },
+    auditoria: {
+      eyebrow: "AUDITORIA",
+      title: "Auditoria Transfeera",
+      subtitle: "O Transfeera so pode conter o que esta no relatorio financeiro. O repasse do dia D paga o financeiro do dia D-1.",
+    },
+    promocoes: {
+      eyebrow: "FINANCEIRO",
+      title: "Promocoes",
+      subtitle: "Lance o valor de promocao interna por dia e cidade. O total entra no Dash Financeiro como desconto.",
+    },
     usuarios: {
       eyebrow: "ADMINISTRACAO",
       title: "Usuarios",
@@ -1125,7 +2003,10 @@ function setView(view) {
   configureFiltersForView(view);
   if (view === "operacional") {
     setOperationalPage(state.opPage);
-  } else if (view === "financeiro" && applyFinanceDateDefaults()) {
+  } else if (view === "promocoes") {
+    if (applyFinanceDateDefaults()) refresh();
+    loadPromotions();
+  } else if ((view === "financeiro" || view === "auditoria") && applyFinanceDateDefaults()) {
     refresh();
   } else if (view === "usuarios") {
     loadUsers();
@@ -1143,10 +2024,16 @@ function setOperationalPage(page) {
   $(`op-${page}`).classList.add("active");
   document.querySelector(`.side-link[data-view="operacional"]`).classList.add("active");
   document.querySelector(`.side-link[data-view="financeiro"]`).classList.remove("active");
+  document.querySelector(`.side-link[data-view="auditoria"]`).classList.remove("active");
+  document.querySelector(`.side-link[data-view="promocoes"]`).classList.remove("active");
   document.querySelector(`.side-link[data-view="usuarios"]`).classList.remove("active");
+  document.querySelector(`.side-link[data-view="upload"]`).classList.remove("active");
   $("operacional").classList.add("active");
   $("financeiro").classList.remove("active");
+  $("auditoria").classList.remove("active");
+  $("promocoes").classList.remove("active");
   $("usuarios").classList.remove("active");
+  $("upload").classList.remove("active");
   configureFiltersForView("operacional");
   $("pageEyebrow").textContent = "OPERACIONAL";
 
@@ -1161,7 +2048,7 @@ function setOperationalPage(page) {
     },
     resultado: {
       title: "Dash Operacional - Resultado Diario",
-      subtitle: "Top 5 melhores entregadores por cidade e os demais logo abaixo, com pedidos, TSH, AR, CAA e overtime.",
+      subtitle: "Top 10 por corridas finalizadas em cada cidade e os demais logo abaixo. Clique na linha para abrir o detalhe por turno.",
     },
     evolucao: {
       title: "Dash Operacional - Evolucao",
@@ -1189,10 +2076,125 @@ document.querySelectorAll(".side-sub-link").forEach((button) => {
   $(filterId).addEventListener("change", () => {
     refresh();
     updateFilterOptions();
+    if (state.view === "promocoes") loadPromotions();
   });
 });
 
 $("clearFiltersButton").addEventListener("click", clearFilters);
+
+$("auditStatus").addEventListener("change", (event) => {
+  state.auditFilter.status = event.target.value;
+  renderAudit();
+});
+
+$("auditDays").addEventListener("click", (event) => {
+  const day = event.target.closest("[data-audit-day]");
+  if (!day) return;
+  const value = day.dataset.auditDay;
+  const alreadySelected = $("start").value === value && $("end").value === value;
+  $("start").value = alreadySelected ? state.meta?.financeMinDate || "" : value;
+  $("end").value = alreadySelected ? state.meta?.financeMaxDate || "" : value;
+  refresh();
+});
+
+$("auditDayChips").addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-audit-day-status]");
+  if (!chip) return;
+  state.auditDayFilter.status = chip.dataset.auditDayStatus;
+  state.auditDayFilter.expanded = false;
+  renderAudit();
+});
+
+$("auditDayMonth").addEventListener("change", (event) => {
+  state.auditDayFilter.month = event.target.value;
+  state.auditDayFilter.expanded = false;
+  renderAudit();
+});
+
+$("auditDaySearch").addEventListener("input", (event) => {
+  state.auditDayFilter.search = event.target.value;
+  state.auditDayFilter.expanded = false;
+  renderAudit();
+});
+
+$("auditDayOrder").addEventListener("click", () => {
+  state.auditDayFilter.order = state.auditDayFilter.order === "desc" ? "asc" : "desc";
+  renderAudit();
+});
+
+$("auditDayClear").addEventListener("click", () => {
+  state.auditDayFilter = { ...state.auditDayFilter, status: "todos", month: "todos", search: "", expanded: false };
+  $("auditDaySearch").value = "";
+  renderAudit();
+});
+
+$("auditDaysFooter").addEventListener("click", (event) => {
+  if (!event.target.closest("#auditDaysToggle")) return;
+  state.auditDayFilter.expanded = !state.auditDayFilter.expanded;
+  renderAudit();
+});
+
+$("auditSearch").addEventListener("input", (event) => {
+  state.auditFilter.search = event.target.value;
+  renderAudit();
+});
+
+$("auditExport").addEventListener("click", exportAuditCsv);
+
+$("weeklyRevenueTableToggle").addEventListener("click", () => {
+  const table = $("weeklyRevenueTable");
+  const shown = table.classList.toggle("hidden");
+  $("weeklyRevenueTableToggle").textContent = shown ? "Ver tabela" : "Ver grafico";
+  $("weeklyRevenueTableToggle").setAttribute("aria-expanded", String(!shown));
+});
+
+$("promoAddForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const date = $("promoNewDate").value;
+  if (!date) return;
+  // Sem isso a data entra no arquivo mas some da tela por causa do filtro de periodo.
+  const widened = widenDateFilterTo(date);
+  try {
+    state.promotions = await dataJson(`/api/promotions?${promotionsQueryParams()}`, {
+      method: "POST",
+      body: JSON.stringify({ date }),
+    });
+    $("promoNewDate").value = "";
+    renderPromotions();
+    setPromoMessage(widened
+      ? `Dia ${brDate(date)} adicionado. O periodo do filtro foi ampliado para mostrar ele.`
+      : `Dia ${brDate(date)} adicionado.`, true);
+    if (widened) refresh();
+  } catch (error) {
+    setPromoMessage(error.message);
+    if (widened) loadPromotions(); // mostra a data que ja existia no periodo ampliado
+  }
+});
+
+$("promoTable").addEventListener("change", (event) => {
+  const input = event.target.closest("[data-promo-date]");
+  if (!input) return;
+  savePromotionCell(input.dataset.promoDate, input.dataset.promoCity, input.value.trim() || "0");
+});
+
+$("promoTable").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.closest("[data-promo-date]")) event.target.blur();
+});
+
+$("promoTable").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-promo-remove]");
+  if (!button) return;
+  const date = button.dataset.promoRemove;
+  if (!confirm(`Excluir o dia ${brDate(date)} e todos os valores de promocao dele?`)) return;
+  try {
+    state.promotions = await dataJson(`/api/promotions?date=${date}&${promotionsQueryParams()}`, { method: "DELETE" });
+    renderPromotions();
+    setPromoMessage(`Dia ${brDate(date)} excluido.`, true);
+    refresh();
+  } catch (error) {
+    setPromoMessage(error.message);
+  }
+});
 
 document.addEventListener("click", (event) => {
   const header = event.target.closest("th[data-sort-key]");
