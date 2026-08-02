@@ -1546,7 +1546,8 @@ app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
   res.json(buildFinance(rows, req.query));
 });
 
-app.get("/api/transfer-audit", supabase.authorize("financeiro"), (req, res) => {
+// Auditoria tem permissao propria: liberada usuario a usuario na tela Usuarios.
+app.get("/api/transfer-audit", supabase.authorize("auditoria"), (req, res) => {
   res.json(buildTransferAudit(req.query));
 });
 

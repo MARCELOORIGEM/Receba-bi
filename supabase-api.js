@@ -7,10 +7,22 @@ const DEFAULT_PERMISSIONS = {
   kpis: true,
   cadastro: true,
   financeiro: false,
+  auditoria: false,
   atualizar_bi: false,
   atualizar_bi_financeiro: false,
   usuarios: false,
 };
+
+// Auditoria virou permissao propria, marcada no card do usuario. Perfil salvo
+// antes disso nao tem a chave: herda do financeiro para ninguem perder acesso
+// na virada, e a partir do primeiro salvamento vale so o que esta marcado.
+function withPermissionDefaults(profile) {
+  if (!profile) return profile;
+  const saved = profile.permissions || {};
+  const permissions = { ...DEFAULT_PERMISSIONS, ...saved };
+  if (saved.auditoria === undefined) permissions.auditoria = Boolean(permissions.financeiro);
+  return { ...profile, permissions };
+}
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -51,7 +63,7 @@ function createSupabaseApi() {
       access_area: power ? "ambos" : "operacional",
       active: true,
       permissions: power
-        ? { ...DEFAULT_PERMISSIONS, financeiro: true, atualizar_bi: true, atualizar_bi_financeiro: true, usuarios: true }
+        ? { ...DEFAULT_PERMISSIONS, financeiro: true, auditoria: true, atualizar_bi: true, atualizar_bi_financeiro: true, usuarios: true }
         : DEFAULT_PERMISSIONS,
       must_change_password: Boolean(user.user_metadata?.must_change_password),
     };
@@ -66,11 +78,11 @@ function createSupabaseApi() {
 
     if (error) throw error;
     if (data) {
-      return {
+      return withPermissionDefaults({
         ...data,
         email: normalizeEmail(user.email),
         must_change_password: Boolean(user.user_metadata?.must_change_password),
-      };
+      });
     }
 
     const profile = defaultProfile(user);
@@ -192,7 +204,7 @@ function createSupabaseApi() {
     if (profileError) return res.status(400).json({ error: profileError.message });
     const byId = new Map((profiles || []).map((profile) => [profile.id, profile]));
 
-    const users = authData.users.map((user) => ({
+    const users = authData.users.map((user) => withPermissionDefaults({
       ...defaultProfile(user),
       ...(byId.get(user.id) || {}),
       email: normalizeEmail(user.email),
@@ -267,7 +279,7 @@ function createSupabaseApi() {
         },
       });
     }
-    res.json({ user: data });
+    res.json({ user: withPermissionDefaults(data) });
   });
 
   router.post("/users/:id/reset-password", authenticate, requireAdmin, async (req, res) => {

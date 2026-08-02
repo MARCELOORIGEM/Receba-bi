@@ -127,6 +127,16 @@ function hasFinancialAccess(user) {
     || Boolean(user.permissions?.financeiro);
 }
 
+// Auditoria e permissao propria, marcada no card do usuario. Perfil antigo, sem
+// a chave salva, continua herdando do financeiro para nao perder acesso.
+function hasAuditAccess(user) {
+  if (state.authMode === "local") return true;
+  if (!user) return false;
+  if (normalizeEmail(user.email) === FULL_ACCESS_EMAIL) return true;
+  if (user.permissions?.auditoria !== undefined) return Boolean(user.permissions.auditoria);
+  return hasFinancialAccess(user);
+}
+
 function hasUsersAccess(user) {
   if (!user) return false;
   return user.role === "admin"
@@ -228,6 +238,7 @@ function showResetForm(email) {
 
 function applyUserAccess() {
   const canSeeFinance = hasFinancialAccess(state.user);
+  const canSeeAudit = hasAuditAccess(state.user);
   const canManageUsers = hasUsersAccess(state.user);
   const canUpload = hasUploadAccess(state.user);
   const canSeeOperational = hasOperationalAccess(state.user);
@@ -235,7 +246,7 @@ function applyUserAccess() {
   const localMode = state.authMode === "local";
   document.querySelector(".side-group").classList.toggle("hidden", !canSeeOperational);
   document.querySelector(".finance-link").classList.toggle("hidden", !canSeeFinance);
-  document.querySelector(".audit-link").classList.toggle("hidden", !canSeeFinance);
+  document.querySelector(".audit-link").classList.toggle("hidden", !canSeeAudit);
   document.querySelector(".promo-link").classList.toggle("hidden", !canSeeFinance);
   document.querySelector(".users-link").classList.toggle("hidden", !canManageUsers);
   document.querySelector(".upload-link").classList.toggle("hidden", !canUpload);
@@ -245,7 +256,7 @@ function applyUserAccess() {
   document.querySelector('[data-op-page="resultado"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.kpis && !permissions.cadastro);
   $("refreshDataButton").classList.toggle("hidden", !localMode && !permissions.atualizar_bi);
   if (!canSeeFinance && state.view === "financeiro") setOperationalPage("kpis");
-  if (!canSeeFinance && state.view === "auditoria") setOperationalPage("kpis");
+  if (!canSeeAudit && state.view === "auditoria") setOperationalPage("kpis");
   if (!canSeeFinance && state.view === "promocoes") setOperationalPage("kpis");
   if (!canManageUsers && state.view === "usuarios") setOperationalPage("kpis");
   if (!canUpload && state.view === "upload") setOperationalPage("kpis");
@@ -262,6 +273,8 @@ function openApp(user) {
     setOperationalPage(firstPage);
   } else if (hasFinancialAccess(user)) {
     setView("financeiro");
+  } else if (hasAuditAccess(user)) {
+    setView("auditoria");
   } else if (hasUsersAccess(user)) {
     setView("usuarios");
   }
@@ -535,11 +548,12 @@ async function refresh() {
   const params = queryParams();
   const canLoadOperational = !state.supabaseEnabled || hasOperationalAccess(state.user);
   const canLoadFinance = !state.supabaseEnabled || hasFinancialAccess(state.user);
+  const canLoadAudit = !state.supabaseEnabled || hasAuditAccess(state.user);
   const financeParams = financeQueryParams();
   const [dashboard, finance, transferAudit, dailyResult] = await Promise.all([
     canLoadOperational ? dataJson(`/api/dashboard?${params}`) : Promise.resolve(null),
     canLoadFinance ? dataJson(`/api/finance?${financeParams}`) : Promise.resolve(null),
-    canLoadFinance ? dataJson(`/api/transfer-audit?${auditQueryParams()}`) : Promise.resolve(null),
+    canLoadAudit ? dataJson(`/api/transfer-audit?${auditQueryParams()}`) : Promise.resolve(null),
     canLoadOperational ? dataJson(`/api/daily-result?${params}`) : Promise.resolve(null),
   ]);
   state.dashboard = dashboard;
@@ -1572,6 +1586,7 @@ const permissionLabels = {
   kpis: "Dashboard KPIs",
   cadastro: "Cadastro",
   financeiro: "Dash Financeiro",
+  auditoria: "Auditoria",
   atualizar_bi: "Atualizar BI (cidades)",
   atualizar_bi_financeiro: "Atualizar BI (financeiro)",
   usuarios: "Gerenciar Usuarios",
@@ -2393,6 +2408,7 @@ $("createUserForm").addEventListener("submit", async (event) => {
     kpis: accessArea !== "financeiro",
     cadastro: accessArea !== "financeiro",
     financeiro: accessArea !== "operacional",
+    auditoria: accessArea !== "operacional",
     atualizar_bi: role === "admin",
     atualizar_bi_financeiro: role === "admin",
     usuarios: role === "admin",
