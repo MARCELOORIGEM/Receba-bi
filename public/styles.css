@@ -429,7 +429,7 @@ h1, h2, h3, p { margin: 0; }
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 245px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -447,7 +447,8 @@ h1, h2, h3, p { margin: 0; }
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 10px 20px;
+  flex-shrink: 0;
+  padding: 4px 10px 14px;
 }
 
 .brand img {
@@ -458,57 +459,107 @@ h1, h2, h3, p { margin: 0; }
   border-radius: 6px;
 }
 
+/* min-height 0 e flex-shrink no rodape: em tela baixa o menu rola sozinho em vez
+   de empurrar o cartao de dados para fora. */
 .side-nav {
   display: grid;
-  gap: 9px;
+  gap: 4px;
+  min-height: 0;
+  padding-bottom: 6px;
+  overflow-y: auto;
+}
+
+/* Menu em blocos com titulo: cada area tem o seu grupo e a sua cor, entao da
+   para achar a tela pelo bloco antes de ler o texto. */
+.side-section {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.side-section:last-child,
+.side-section.last-visible { border-bottom: 0; }
+.side-section:first-child { padding-top: 0; }
+
+.side-section-title {
+  padding: 0 12px 4px;
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  text-transform: uppercase;
 }
 
 .side-group {
   display: grid;
-  gap: 7px;
+  gap: 4px;
 }
 
+/* Cada item carrega o seu acento: marcador, texto ativo e barra usam a mesma cor. */
 .side-link {
+  --accent: var(--orange-solid);
+  --accent-soft: rgba(255,107,18,.12);
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
   color: var(--ink-2);
-  padding: 13px 12px;
-  border-radius: 8px;
+  padding: 12px 12px;
+  border-radius: 9px;
   text-align: left;
+  font-family: inherit;
   font-weight: 800;
   font-size: 13.5px;
   cursor: pointer;
-  transition: background .15s ease, color .15s ease;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
 }
 
-.side-link:hover { background: var(--panel-2); color: var(--ink); }
+.side-link > b {
+  flex: 1;
+  min-width: 0;
+  font-weight: 800;
+  letter-spacing: .4px;
+}
+
+.side-link[data-view="financeiro"] { --accent: var(--green); --accent-soft: rgba(34,211,165,.12); }
+.side-link[data-view="auditoria"] { --accent: var(--blue); --accent-soft: rgba(91,155,255,.14); }
+.side-link[data-view="promocoes"] { --accent: var(--yellow); --accent-soft: rgba(255,194,51,.12); }
+.side-link[data-view="usuarios"] { --accent: var(--ink-2); --accent-soft: rgba(194,202,212,.1); }
+
+.side-link:hover {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: #fff;
+}
 
 .side-folder {
   background: var(--panel-2);
   border-color: var(--line);
 }
 
-/* Estado ativo com barra lateral laranja: aponta a pagina sem pintar tudo. */
+/* Estado ativo com barra lateral na cor da area: aponta a pagina sem pintar tudo. */
 .side-link.active {
-  position: relative;
   color: #fff;
-  background: var(--panel-3);
+  background: linear-gradient(90deg, var(--accent-soft), var(--panel-3));
   border-color: var(--line-2);
 }
+
+.side-link.active > b { color: #fff; }
 
 .side-link.active::before {
   content: "";
   position: absolute;
   left: -14px;
-  top: 9px;
-  bottom: 9px;
+  top: 8px;
+  bottom: 8px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--orange-solid);
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent);
 }
 
 .folder-icon {
@@ -553,47 +604,79 @@ h1, h2, h3, p { margin: 0; }
 
 .side-subnav {
   display: grid;
-  gap: 6px;
-  margin-left: 20px;
+  gap: 2px;
+  margin: 2px 0 0 21px;
   padding-left: 12px;
   border-left: 1px solid var(--line);
 }
 
+/* Subpagina com tracinho na frente: fica claro que pertence ao dashboard acima. */
 .side-sub-link {
-  height: 34px;
+  position: relative;
+  height: 32px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: var(--muted);
-  padding: 0 10px;
+  color: var(--ink-2);
+  padding: 0 10px 0 20px;
   text-align: left;
-  font-weight: 800;
-  font-size: 13px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 12.5px;
+  letter-spacing: .3px;
   cursor: pointer;
+  transition: background .15s ease, color .15s ease;
 }
 
-.side-sub-link:hover { background: var(--panel-2); color: var(--ink-2); }
+.side-sub-link::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-2);
+  transform: translateY(-50%);
+}
+
+.side-sub-link:hover { background: var(--panel-2); color: #fff; }
+.side-sub-link:hover::before { background: var(--muted); }
 
 .side-sub-link.active {
   color: #fff;
   background: var(--panel-3);
   border-color: var(--line-2);
+  font-weight: 900;
+}
+
+.side-sub-link.active::before {
+  width: 8px;
+  height: 3px;
+  background: var(--orange-solid);
+  box-shadow: 0 0 8px var(--orange-solid);
 }
 
 .dot {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
   border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
 }
 
 .dot.orange { background: var(--orange); box-shadow: 0 0 10px var(--orange); }
 .dot.green { background: var(--green); box-shadow: 0 0 10px var(--green); }
+.dot.blue { background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.dot.yellow { background: var(--yellow); box-shadow: 0 0 10px var(--yellow); }
 
 .sidebar-footer {
   margin-top: auto;
+  flex-shrink: 0;
   display: grid;
   gap: 12px;
-  padding: 12px 10px;
+  padding: 12px 10px 4px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -3450,7 +3533,11 @@ th.num { text-align: center; }
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
-  .side-nav { grid-template-columns: 1fr 1fr; }
+  .side-nav { grid-template-columns: 1fr; }
+  .side-section { padding: 8px 0; }
+  .side-section[data-section="financeiro"],
+  .side-section[data-section="admin"] { grid-template-columns: 1fr 1fr; }
+  .side-section-title { grid-column: 1 / -1; }
   .filters,
   .user-create-form,
   .permissions-grid,

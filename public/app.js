@@ -212,6 +212,7 @@ function showLogin() {
   document.querySelector(".promo-link").classList.add("hidden");
   document.querySelector(".users-link").classList.add("hidden");
   document.querySelector(".upload-link").classList.add("hidden");
+  syncSideSections();
   setLoginMessage("");
 }
 
@@ -244,6 +245,20 @@ function showResetForm(email) {
   $("resetCode").focus();
 }
 
+// Titulo de bloco sem item liberado embaixo viraria rotulo solto no menu, e a
+// linha divisoria do ultimo bloco visivel fica sobrando.
+function syncSideSections() {
+  const visible = [];
+  document.querySelectorAll(".side-section").forEach((section) => {
+    const anyVisible = [...section.querySelectorAll(".side-link")]
+      .some((link) => !link.classList.contains("hidden"));
+    section.classList.toggle("hidden", !anyVisible);
+    section.classList.remove("last-visible");
+    if (anyVisible) visible.push(section);
+  });
+  visible.at(-1)?.classList.add("last-visible");
+}
+
 function applyUserAccess() {
   const canSeeFinance = hasFinancialAccess(state.user);
   const canSeeAudit = hasAuditAccess(state.user);
@@ -253,7 +268,8 @@ function applyUserAccess() {
   const canSeeOperational = hasOperationalAccess(state.user);
   const permissions = state.user?.permissions || {};
   const localMode = state.authMode === "local";
-  document.querySelector(".side-group").classList.toggle("hidden", !canSeeOperational);
+  document.querySelector('.side-link[data-view="operacional"]').classList.toggle("hidden", !canSeeOperational);
+  document.querySelector(".side-subnav").classList.toggle("hidden", !canSeeOperational);
   document.querySelector(".finance-link").classList.toggle("hidden", !canSeeFinance);
   document.querySelector(".audit-link").classList.toggle("hidden", !canSeeAudit);
   document.querySelector(".promo-link").classList.toggle("hidden", !canSeePromo);
@@ -264,6 +280,7 @@ function applyUserAccess() {
   document.querySelector('[data-op-page="cadastro"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.cadastro);
   document.querySelector('[data-op-page="resultado"].side-sub-link').classList.toggle("hidden", !localMode && !permissions.kpis && !permissions.cadastro);
   $("refreshDataButton").classList.toggle("hidden", !localMode && !permissions.atualizar_bi);
+  syncSideSections();
   if (!canSeeFinance && state.view === "financeiro") setOperationalPage("kpis");
   if (!canSeeAudit && state.view === "auditoria") setOperationalPage("kpis");
   if (!canSeePromo && state.view === "promocoes") setOperationalPage("kpis");

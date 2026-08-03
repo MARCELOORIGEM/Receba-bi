@@ -126,38 +126,49 @@
         </div>
 
         <nav class="side-nav">
-          <div class="side-group">
-            <button class="side-link active side-folder" data-view="operacional">
-              <span class="folder-icon"></span>
-              Dashboard Operacional
-            </button>
-            <div class="side-subnav">
-              <button class="side-sub-link active" data-op-page="kpis">KPIs</button>
-              <button class="side-sub-link" data-op-page="cadastro">Cadastro</button>
-              <button class="side-sub-link" data-op-page="resultado">Resultado Diario</button>
+          <section class="side-section" data-section="operacional">
+            <span class="side-section-title">Operacao</span>
+            <div class="side-group">
+              <button class="side-link active side-folder" data-view="operacional">
+                <span class="folder-icon"></span>
+                <b>Dash Operacional</b>
+              </button>
+              <div class="side-subnav">
+                <button class="side-sub-link active" data-op-page="kpis">KPIs</button>
+                <button class="side-sub-link" data-op-page="cadastro">Cadastro</button>
+                <button class="side-sub-link" data-op-page="resultado">Resultado Diario</button>
+              </div>
             </div>
-          </div>
-          <button class="side-link finance-link hidden" data-view="financeiro">
-            <span class="dot green"></span>
-            Dash Financeiro
-          </button>
-          <button class="side-link audit-link hidden" data-view="auditoria">
-            <span class="dot blue"></span>
-            RECEBA AUDIT
-            <span class="side-badge hidden" id="auditBadge">0</span>
-          </button>
-          <button class="side-link promo-link hidden" data-view="promocoes">
-            <span class="dot yellow"></span>
-            Promocoes
-          </button>
-          <button class="side-link users-link hidden" data-view="usuarios">
-            <span class="user-icon"></span>
-            Usuarios
-          </button>
-          <button class="side-link upload-link hidden" data-view="upload">
-            <span class="dot orange"></span>
-            Upload BI
-          </button>
+          </section>
+
+          <section class="side-section" data-section="financeiro">
+            <span class="side-section-title">Financeiro</span>
+            <button class="side-link finance-link hidden" data-view="financeiro">
+              <span class="dot green"></span>
+              <b>Dash Financeiro</b>
+            </button>
+            <button class="side-link audit-link hidden" data-view="auditoria">
+              <span class="dot blue"></span>
+              <b>RECEBA AUDIT</b>
+              <span class="side-badge hidden" id="auditBadge">0</span>
+            </button>
+            <button class="side-link promo-link hidden" data-view="promocoes">
+              <span class="dot yellow"></span>
+              <b>Promocoes</b>
+            </button>
+          </section>
+
+          <section class="side-section" data-section="admin">
+            <span class="side-section-title">Administracao</span>
+            <button class="side-link users-link hidden" data-view="usuarios">
+              <span class="user-icon"></span>
+              <b>Usuarios</b>
+            </button>
+            <button class="side-link upload-link hidden" data-view="upload">
+              <span class="dot orange"></span>
+              <b>Upload BI</b>
+            </button>
+          </section>
         </nav>
 
         <div class="sidebar-footer">
