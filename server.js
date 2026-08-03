@@ -976,7 +976,7 @@ function buildFinanceIndex() {
     }
     seen.add(fingerprint);
     cpfs.add(cpf);
-    if (!byCpf.has(cpf)) byCpf.set(cpf, { name: row.name, city: row.city });
+    if (!byCpf.has(cpf)) byCpf.set(cpf, { id: row.id, name: row.name, city: row.city });
 
     const key = `${cpf}||${row.date}`;
     const current = groups.get(key) || { cpf, date: row.date, rows: [], amount: 0, name: "", city: "" };
@@ -1132,6 +1132,8 @@ function buildAuditRow(issue, finance, transfer, financeDate, financeCpfs, finan
     transferDate: first.date || addDays(financeDate, 1),
     cpf,
     cpfMask: formatCpf(cpf),
+    // ID do entregador no BI financeiro: o mesmo identificador das outras telas.
+    driverId: financeRows[0]?.id || known?.id || "",
     transferName: first.name || "",
     financeName: financeRows[0]?.name || known?.name || "",
     city: financeRows[0]?.city || known?.city || "",
@@ -1331,6 +1333,7 @@ function buildTransferAudit(query) {
         transferDate: item.date,
         cpf: "",
         cpfMask: "sem CPF",
+        driverId: "",
         transferName: item.name || "",
         financeName: "",
         city: "",
@@ -1546,16 +1549,17 @@ app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
   res.json(buildFinance(rows, req.query));
 });
 
-// Auditoria tem permissao propria: liberada usuario a usuario na tela Usuarios.
+// RECEBA AUDIT e Promocoes tem permissao propria, liberada usuario a usuario
+// na tela Usuarios.
 app.get("/api/transfer-audit", supabase.authorize("auditoria"), (req, res) => {
   res.json(buildTransferAudit(req.query));
 });
 
-app.get("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+app.get("/api/promotions", supabase.authorize("promocoes"), (req, res) => {
   res.json(buildPromotions(req.query));
 });
 
-app.post("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+app.post("/api/promotions", supabase.authorize("promocoes"), (req, res) => {
   const date = String(req.body.date || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Informe uma data valida." });
   const store = readPromotions();
@@ -1565,7 +1569,7 @@ app.post("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
   res.json(buildPromotions(req.query));
 });
 
-app.put("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+app.put("/api/promotions", supabase.authorize("promocoes"), (req, res) => {
   const date = String(req.body.date || "");
   const city = normalizeCity(req.body.city);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Data invalida." });
@@ -1582,7 +1586,7 @@ app.put("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
   res.json(buildPromotions(req.query));
 });
 
-app.delete("/api/promotions", supabase.authorize("financeiro"), (req, res) => {
+app.delete("/api/promotions", supabase.authorize("promocoes"), (req, res) => {
   const date = String(req.query.date || "");
   const store = readPromotions();
   if (!store[date]) return res.status(404).json({ error: "Data nao encontrada." });

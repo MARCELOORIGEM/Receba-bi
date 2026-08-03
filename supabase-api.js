@@ -8,19 +8,25 @@ const DEFAULT_PERMISSIONS = {
   cadastro: true,
   financeiro: false,
   auditoria: false,
+  promocoes: false,
   atualizar_bi: false,
   atualizar_bi_financeiro: false,
   usuarios: false,
 };
 
-// Auditoria virou permissao propria, marcada no card do usuario. Perfil salvo
-// antes disso nao tem a chave: herda do financeiro para ninguem perder acesso
-// na virada, e a partir do primeiro salvamento vale so o que esta marcado.
+// RECEBA AUDIT e Promocoes viraram permissoes proprias, marcadas no card do
+// usuario. Perfil salvo antes disso nao tem as chaves: herdam do financeiro
+// para ninguem perder acesso na virada, e a partir do primeiro salvamento vale
+// so o que esta marcado.
+const INHERIT_FROM_FINANCE = ["auditoria", "promocoes"];
+
 function withPermissionDefaults(profile) {
   if (!profile) return profile;
   const saved = profile.permissions || {};
   const permissions = { ...DEFAULT_PERMISSIONS, ...saved };
-  if (saved.auditoria === undefined) permissions.auditoria = Boolean(permissions.financeiro);
+  for (const key of INHERIT_FROM_FINANCE) {
+    if (saved[key] === undefined) permissions[key] = Boolean(permissions.financeiro);
+  }
   return { ...profile, permissions };
 }
 
@@ -63,7 +69,7 @@ function createSupabaseApi() {
       access_area: power ? "ambos" : "operacional",
       active: true,
       permissions: power
-        ? { ...DEFAULT_PERMISSIONS, financeiro: true, auditoria: true, atualizar_bi: true, atualizar_bi_financeiro: true, usuarios: true }
+        ? { ...DEFAULT_PERMISSIONS, financeiro: true, auditoria: true, promocoes: true, atualizar_bi: true, atualizar_bi_financeiro: true, usuarios: true }
         : DEFAULT_PERMISSIONS,
       must_change_password: Boolean(user.user_metadata?.must_change_password),
     };

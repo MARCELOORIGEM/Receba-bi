@@ -2132,6 +2132,12 @@ th.num { text-align: center; }
 
 .audit-name-diff em { color: var(--muted); font-style: normal; }
 
+/* ID do entregador: mesmo tratamento das outras telas, sem quebrar linha. */
+.driver-id {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .audit-receipt {
   color: var(--blue);
   font-weight: 800;

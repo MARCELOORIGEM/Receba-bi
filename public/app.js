@@ -127,14 +127,22 @@ function hasFinancialAccess(user) {
     || Boolean(user.permissions?.financeiro);
 }
 
-// Auditoria e permissao propria, marcada no card do usuario. Perfil antigo, sem
-// a chave salva, continua herdando do financeiro para nao perder acesso.
-function hasAuditAccess(user) {
+// RECEBA AUDIT e Promocoes sao permissoes proprias, marcadas no card do usuario.
+// Perfil antigo, sem a chave salva, continua herdando do financeiro.
+function hasOwnFinancePermission(user, key) {
   if (state.authMode === "local") return true;
   if (!user) return false;
   if (normalizeEmail(user.email) === FULL_ACCESS_EMAIL) return true;
-  if (user.permissions?.auditoria !== undefined) return Boolean(user.permissions.auditoria);
+  if (user.permissions?.[key] !== undefined) return Boolean(user.permissions[key]);
   return hasFinancialAccess(user);
+}
+
+function hasAuditAccess(user) {
+  return hasOwnFinancePermission(user, "auditoria");
+}
+
+function hasPromoAccess(user) {
+  return hasOwnFinancePermission(user, "promocoes");
 }
 
 function hasUsersAccess(user) {
@@ -239,6 +247,7 @@ function showResetForm(email) {
 function applyUserAccess() {
   const canSeeFinance = hasFinancialAccess(state.user);
   const canSeeAudit = hasAuditAccess(state.user);
+  const canSeePromo = hasPromoAccess(state.user);
   const canManageUsers = hasUsersAccess(state.user);
   const canUpload = hasUploadAccess(state.user);
   const canSeeOperational = hasOperationalAccess(state.user);
@@ -247,7 +256,7 @@ function applyUserAccess() {
   document.querySelector(".side-group").classList.toggle("hidden", !canSeeOperational);
   document.querySelector(".finance-link").classList.toggle("hidden", !canSeeFinance);
   document.querySelector(".audit-link").classList.toggle("hidden", !canSeeAudit);
-  document.querySelector(".promo-link").classList.toggle("hidden", !canSeeFinance);
+  document.querySelector(".promo-link").classList.toggle("hidden", !canSeePromo);
   document.querySelector(".users-link").classList.toggle("hidden", !canManageUsers);
   document.querySelector(".upload-link").classList.toggle("hidden", !canUpload);
   applyUploadCardAccess();
@@ -257,7 +266,7 @@ function applyUserAccess() {
   $("refreshDataButton").classList.toggle("hidden", !localMode && !permissions.atualizar_bi);
   if (!canSeeFinance && state.view === "financeiro") setOperationalPage("kpis");
   if (!canSeeAudit && state.view === "auditoria") setOperationalPage("kpis");
-  if (!canSeeFinance && state.view === "promocoes") setOperationalPage("kpis");
+  if (!canSeePromo && state.view === "promocoes") setOperationalPage("kpis");
   if (!canManageUsers && state.view === "usuarios") setOperationalPage("kpis");
   if (!canUpload && state.view === "upload") setOperationalPage("kpis");
 }
@@ -1045,6 +1054,7 @@ function auditVisibleRows() {
     if (!status.match(row)) return false;
     if (!term) return true;
     if (digits && row.cpf.includes(digits)) return true;
+    if (row.driverId && String(row.driverId).toLowerCase().includes(term)) return true;
     const names = normalizeText(`${row.transferName} ${row.financeName}`).toLowerCase();
     return names.includes(term);
   });
@@ -1404,6 +1414,7 @@ function renderAudit() {
       <td>${brDate(row.financeDate)}</td>
       <td>${brDate(row.transferDate)}</td>
       <td class="city-cell ${cityToneClass(row.city)}">${row.city || "-"}</td>
+      <td class="driver-id">${escapeHtml(row.driverId || "-")}</td>
       <td>${escapeHtml(row.cpfMask || "-")}</td>
       <td>${auditNameCell(row)}</td>
       <td class="num audit-amount ${unbacked ? "blink" : ""}">
@@ -1427,6 +1438,7 @@ function renderAudit() {
       ${sortHeader("auditRows", "financeDate", "DATA FIN.")}
       ${sortHeader("auditRows", "transferDate", "DATA TRANSF.")}
       ${sortHeader("auditRows", "city", "CIDADE")}
+      ${sortHeader("auditRows", "driverId", "ID")}
       ${sortHeader("auditRows", "cpf", "CPF / CNPJ")}
       ${sortHeader("auditRows", "financeName", "ENTREGADOR")}
       ${sortHeader("auditRows", "financeAmount", "FINANCEIRO")}
@@ -1436,19 +1448,20 @@ function renderAudit() {
       ${sortHeader("auditRows", "transferStatus", "STATUS")}
       <th>COMPROVANTE</th>
     </tr></thead>
-    <tbody>${rows || `<tr><td colspan="12">Nada a corrigir com os filtros atuais.</td></tr>`}</tbody>`;
+    <tbody>${rows || `<tr><td colspan="13">Nada a corrigir com os filtros atuais.</td></tr>`}</tbody>`;
 }
 
 function exportAuditCsv() {
   const rows = auditVisibleRows();
   if (!rows.length) return;
-  const header = ["Problema", "Alertas", "Data financeiro", "Data Transfeera", "Cidade", "CPF/CNPJ", "Entregador financeiro", "Favorecido Transfeera", "Valor financeiro", "Valor pago", "Diferenca", "Risco", "Status", "Motivo", "Lote", "Comprovante"];
+  const header = ["Problema", "Alertas", "Data financeiro", "Data Transfeera", "Cidade", "ID entregador", "CPF/CNPJ", "Entregador financeiro", "Favorecido Transfeera", "Valor financeiro", "Valor pago", "Diferenca", "Risco", "Status", "Motivo", "Lote", "Comprovante"];
   const body = rows.map((row) => [
     row.label,
     row.flags.map((flag) => AUDIT_FLAG_LABELS[flag] || flag).join(" / "),
     brDate(row.financeDate),
     brDate(row.transferDate),
     row.city,
+    row.driverId,
     row.cpfMask,
     row.financeName,
     row.transferName,
@@ -1586,7 +1599,8 @@ const permissionLabels = {
   kpis: "Dashboard KPIs",
   cadastro: "Cadastro",
   financeiro: "Dash Financeiro",
-  auditoria: "Auditoria",
+  auditoria: "RECEBA AUDIT",
+  promocoes: "Promocoes",
   atualizar_bi: "Atualizar BI (cidades)",
   atualizar_bi_financeiro: "Atualizar BI (financeiro)",
   usuarios: "Gerenciar Usuarios",
@@ -1958,11 +1972,11 @@ function setView(view) {
     setOperationalPage(state.opPage || "kpis");
     return;
   }
-  if (view === "auditoria" && !hasFinancialAccess(state.user)) {
+  if (view === "auditoria" && !hasAuditAccess(state.user)) {
     setOperationalPage(state.opPage || "kpis");
     return;
   }
-  if (view === "promocoes" && !hasFinancialAccess(state.user)) {
+  if (view === "promocoes" && !hasPromoAccess(state.user)) {
     setOperationalPage(state.opPage || "kpis");
     return;
   }
@@ -1991,8 +2005,8 @@ function setView(view) {
       subtitle: "Financeiro por cidade e periodo, com total ganho, dinheiro pendente e projecao de ganhos de 10% a 30%.",
     },
     auditoria: {
-      eyebrow: "AUDITORIA",
-      title: "Auditoria Transfeera",
+      eyebrow: "RECEBA AUDIT",
+      title: "RECEBA AUDIT - Transfeera x Financeiro",
       subtitle: "O Transfeera so pode conter o que esta no relatorio financeiro. O repasse do dia D paga o financeiro do dia D-1.",
     },
     promocoes: {
@@ -2409,6 +2423,7 @@ $("createUserForm").addEventListener("submit", async (event) => {
     cadastro: accessArea !== "financeiro",
     financeiro: accessArea !== "operacional",
     auditoria: accessArea !== "operacional",
+    promocoes: accessArea !== "operacional",
     atualizar_bi: role === "admin",
     atualizar_bi_financeiro: role === "admin",
     usuarios: role === "admin",
