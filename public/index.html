@@ -231,6 +231,31 @@
                 </div>
                 <div class="table-wrap"><table id="hotzoneTable"></table></div>
               </section>
+
+              <section class="panel page-panel">
+                <div class="panel-head">
+                  <div>
+                    <h2>Evolucao por periodo</h2>
+                    <span>Corridas, TSH e critical por cidade</span>
+                  </div>
+                  <div class="chart-head-controls">
+                    <div class="chart-period-toggle" id="trendPeriodToggle">
+                      <button type="button" class="chart-period-btn active" data-period="daily">Diario</button>
+                      <button type="button" class="chart-period-btn" data-period="weekly">Semanal</button>
+                      <button type="button" class="chart-period-btn" data-period="monthly">Mensal</button>
+                    </div>
+                    <div class="chart-metric-toggle">
+                      <button type="button" class="chart-metric-btn active" data-metric="orders">Corridas</button>
+                      <button type="button" class="chart-metric-btn active" data-metric="tsh">TSH</button>
+                      <button type="button" class="chart-metric-btn active" data-metric="critical">TSH Critical</button>
+                      <button type="button" class="chart-metric-btn" data-metric="caa">CAA</button>
+                      <button type="button" class="chart-metric-btn" data-metric="ar">AR</button>
+                      <button type="button" class="chart-metric-btn" data-metric="ot">Overtime</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="chart-grid" id="trendCharts"></div>
+              </section>
             </section>
 
             <section class="op-page" id="op-cadastro">

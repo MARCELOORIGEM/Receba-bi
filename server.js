@@ -600,6 +600,14 @@ function buildDashboard(rows) {
     })
     .sort((a, b) => a.week.localeCompare(b.week) || cityOrder.indexOf(a.city) - cityOrder.indexOf(b.city));
 
+  // O grafico dos KPIs troca a granularidade sem recarregar: o servidor ja manda
+  // as tres agregacoes prontas, so muda o balde (dia, semana ou mes).
+  const series = {
+    daily: periodSeries(rows, (row) => row.date, (period) => `${period.slice(8, 10)}/${period.slice(5, 7)}`),
+    weekly: periodSeries(rows, (row) => row.week, (period) => period.replace(/^\d{4}-/, "")),
+    monthly: periodSeries(rows, (row) => row.date.slice(0, 7), (period) => `${MONTH_LABELS[Number(period.slice(5, 7)) - 1]}/${period.slice(2, 4)}`),
+  };
+
   return {
     total: {
       orders: sum(rows, "orders"),
@@ -615,8 +623,33 @@ function buildDashboard(rows) {
     drivers: drivers.slice(0, 300),
     driverTotal: drivers.length,
     weekly,
+    series,
     colorForPercent,
   };
+}
+
+const MONTH_LABELS = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+function periodSeries(rows, bucketOf, labelOf) {
+  const dated = rows.filter((row) => row.date);
+  return [...groupBy(dated, (row) => `${row.city}||${bucketOf(row)}`).entries()]
+    .map(([key, periodRows]) => {
+      const [city, period] = key.split("||");
+      const general = summarizeTsh(periodRows);
+      const critical = summarizeTsh(criticalRows(periodRows));
+      return {
+        city,
+        period,
+        label: labelOf(period),
+        orders: sum(periodRows, "orders"),
+        tsh: general.tsh,
+        critical: critical.tsh,
+        ar: avg(periodRows, "ar"),
+        caa: avg(periodRows, "caa"),
+        ot: avg(periodRows, "ot"),
+      };
+    })
+    .sort((a, b) => a.period.localeCompare(b.period) || cityOrder.indexOf(a.city) - cityOrder.indexOf(b.city));
 }
 
 function pickMostFrequent(rows, key) {

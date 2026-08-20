@@ -4,6 +4,7 @@ const state = {
   view: "operacional",
   opPage: "kpis",
   chartMetrics: new Set(["orders", "tsh", "critical"]),
+  trendPeriod: "daily",
   meta: null,
   dashboard: null,
   finance: null,
@@ -1787,6 +1788,43 @@ function renderWeeklyCharts(targetId = "weeklyCharts") {
   });
 }
 
+const TREND_PERIODS = ["daily", "weekly", "monthly"];
+
+function renderTrendCharts(targetId = "trendCharts") {
+  const target = $(targetId);
+  if (!target) return;
+
+  const series = state.dashboard?.series?.[state.trendPeriod] || [];
+  const cities = [...new Set(series.map((row) => row.city))];
+  if (!cities.length) {
+    target.innerHTML = `<p class="chart-empty">Sem dados para o periodo selecionado.</p>`;
+    return;
+  }
+
+  target.innerHTML = cities.map((city) => `
+    <article class="chart-card">
+      <h3>${escapeHtml(city)}</h3>
+      <canvas width="560" height="190" data-city="${escapeHtml(city)}"></canvas>
+    </article>`).join("");
+
+  target.querySelectorAll("canvas[data-city]").forEach((canvas) => {
+    drawChart(canvas, series.filter((row) => row.city === canvas.dataset.city));
+  });
+}
+
+function setTrendPeriod(period) {
+  if (!TREND_PERIODS.includes(period)) return;
+  state.trendPeriod = period;
+  document.querySelectorAll(".chart-period-btn").forEach((button) => {
+    button.classList.toggle("active", button.dataset.period === period);
+  });
+  renderTrendCharts();
+}
+
+function chartPointLabel(row) {
+  return row.label ?? String(row.week ?? "").replace(/^\d{4}-/, "");
+}
+
 function drawChart(canvas, rows) {
   const ctx = canvas.getContext("2d");
   const width = canvas.width;
@@ -1801,6 +1839,11 @@ function drawChart(canvas, rows) {
   ctx.lineTo(width - 18, 158);
   ctx.stroke();
 
+  // A serie diaria chega com dezenas de pontos: sem afinar a linha e pular
+  // rotulos o grafico vira um borrao. Semanal/mensal seguem como antes.
+  const dense = rows.length > 12;
+  const labelStep = Math.max(1, Math.ceil(rows.length / 12));
+
   const maxOrders = Math.max(1, ...rows.map((row) => row.orders));
   const x = (index) => 45 + index * ((width - 90) / Math.max(rows.length - 1, 1));
   const yOrders = (value) => 158 - (value / maxOrders) * 88;
@@ -1809,14 +1852,19 @@ function drawChart(canvas, rows) {
 
   activeMetrics.forEach((metric) => {
     const config = CHART_METRIC_CONFIG[metric];
-    drawLine(ctx, rows.map((row, index) => [x(index), yFor(metric, row[metric])]), config.color);
+    drawLine(ctx, rows.map((row, index) => [x(index), yFor(metric, row[metric])]), config.color, dense);
   });
 
   rows.forEach((row, index) => {
     const px = x(index);
-    ctx.fillStyle = "#aaa";
-    ctx.font = "11px Arial";
-    ctx.fillText(row.week.replace("2026-", ""), px - 12, 178);
+    if (index % labelStep === 0 || index === rows.length - 1) {
+      const label = chartPointLabel(row);
+      ctx.fillStyle = "#aaa";
+      ctx.font = "11px Arial";
+      ctx.fillText(label, px - ctx.measureText(label).width / 2, 178);
+    }
+
+    if (dense) return;
 
     activeMetrics.forEach((metric, metricIndex) => {
       const config = CHART_METRIC_CONFIG[metric];
@@ -1849,17 +1897,17 @@ function drawLegend(ctx, activeMetrics) {
   });
 }
 
-function drawLine(ctx, points, color) {
+function drawLine(ctx, points, color, dense = false) {
   if (!points.length) return;
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 4;
+  ctx.lineWidth = dense ? 2 : 4;
   ctx.beginPath();
   points.forEach(([x, y], index) => index ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
   ctx.stroke();
   points.forEach(([x, y]) => {
     ctx.beginPath();
-    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.arc(x, y, dense ? 2.5 : 4, 0, Math.PI * 2);
     ctx.fill();
   });
 }
@@ -1873,6 +1921,7 @@ function render() {
     renderDrivers();
     renderWeeklyCharts();
     renderWeeklyCharts("cadastroWeeklyCharts");
+    renderTrendCharts();
   }
   if (state.finance) renderFinance();
   if (state.transferAudit) renderAudit();
@@ -2623,11 +2672,16 @@ function setChartMetric(metric) {
   if (state.dashboard) {
     renderWeeklyCharts();
     renderWeeklyCharts("cadastroWeeklyCharts");
+    renderTrendCharts();
   }
 }
 
 document.querySelectorAll(".chart-metric-btn").forEach((button) => {
   button.addEventListener("click", () => setChartMetric(button.dataset.metric));
+});
+
+document.querySelectorAll(".chart-period-btn").forEach((button) => {
+  button.addEventListener("click", () => setTrendPeriod(button.dataset.period));
 });
 
 $("dailyResultCities").addEventListener("click", (event) => {
