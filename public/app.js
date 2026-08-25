@@ -3,8 +3,13 @@ const DEFAULT_PASSWORD = "RECEBA99";
 const state = {
   view: "operacional",
   opPage: "kpis",
+  cadastroView: "novos",
   chartMetrics: new Set(["orders", "tsh", "critical"]),
   trendPeriod: "daily",
+  signupPeriod: "monthly",
+  signups: null,
+  signupPeople: [],
+  signupFilter: { start: "", end: "", praca: "", origin: "", modal: "", status: "", search: "" },
   meta: null,
   dashboard: null,
   finance: null,
@@ -28,6 +33,9 @@ const state = {
     drivers: { key: "city", direction: "asc" },
     financeDrivers: { key: "totalDaily", direction: "desc" },
     auditRows: { key: "risk", direction: "desc" },
+    signupPraca: { key: "signups", direction: "desc" },
+    signupOrigin: { key: "signups", direction: "desc" },
+    signupRows: { key: "date", direction: "desc" },
   },
 };
 
@@ -203,6 +211,9 @@ function showFirstAccess(email) {
 }
 
 function showLogin() {
+  $("appShell").classList.add("hidden");
+  $("loginScreen").classList.remove("hidden");
+  document.body.classList.remove("booting");
   state.pendingFirstAccessEmail = "";
   state.pendingForgotEmail = "";
   ["firstAccessForm", "forgotForm", "resetForm"].forEach((id) => $(id).classList.add("hidden"));
@@ -289,12 +300,72 @@ function applyUserAccess() {
   if (!canUpload && state.view === "upload") setOperationalPage("kpis");
 }
 
+const LAST_VIEW_KEY = "receba:lastView";
+
+// Guarda a tela aberta para o F5 voltar exatamente onde a pessoa estava, em vez
+// de jogar todo mundo de volta nos KPIs.
+function saveLastView() {
+  if (!state.user) return;
+  try {
+    localStorage.setItem(LAST_VIEW_KEY, JSON.stringify({
+      view: state.view,
+      opPage: state.opPage,
+      cadastroView: state.cadastroView,
+    }));
+  } catch {
+    // Navegador sem localStorage: a tela apenas volta no padrao.
+  }
+}
+
+function readLastView() {
+  try {
+    return JSON.parse(localStorage.getItem(LAST_VIEW_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function restoreLastView(user) {
+  const saved = readLastView();
+  if (!saved?.view) return false;
+
+  const permissions = user?.permissions || {};
+  const localMode = state.authMode === "local";
+  const allowed = {
+    operacional: hasOperationalAccess(user),
+    financeiro: hasFinancialAccess(user),
+    auditoria: hasAuditAccess(user),
+    promocoes: hasPromoAccess(user),
+    usuarios: hasUsersAccess(user),
+    upload: hasUploadAccess(user),
+  };
+  if (!allowed[saved.view]) return false;
+
+  if (saved.view !== "operacional") {
+    setView(saved.view);
+    return true;
+  }
+
+  // A sub-pagina guardada pode ter deixado de ser permitida entre uma sessao e
+  // outra: nesse caso volta para a que a pessoa ainda pode ver.
+  const canKpis = localMode || permissions.kpis !== false;
+  const canCadastro = localMode || Boolean(permissions.cadastro);
+  let page = saved.opPage || "kpis";
+  if (page === "cadastro" && !canCadastro) page = "kpis";
+  if ((page === "kpis" || page === "resultado") && !canKpis) page = canCadastro ? "cadastro" : "kpis";
+  if (saved.cadastroView) state.cadastroView = saved.cadastroView;
+  setOperationalPage(page);
+  return true;
+}
+
 function openApp(user) {
   state.user = user;
   saveActiveSession(user);
   applyUserAccess();
   $("loginScreen").classList.add("hidden");
   $("appShell").classList.remove("hidden");
+  document.body.classList.remove("booting");
+  if (restoreLastView(user)) return;
   if (hasOperationalAccess(user)) {
     const firstPage = user.permissions?.kpis === false && user.permissions?.cadastro ? "cadastro" : "kpis";
     setOperationalPage(firstPage);
@@ -532,6 +603,17 @@ function clearFilters() {
   updateFilterOptions();
 }
 
+// O botao de limpar so aparece quando ha filtro valendo: periodo cheio e nenhuma
+// escolha marcada nao tem o que limpar.
+function renderClearFiltersButton() {
+  const meta = state.meta || {};
+  const isDefaultDate = (value, ...defaults) => !value || defaults.filter(Boolean).includes(value);
+  const dirty = ["city", "hotzone", "cpf", "id", "name", "week", "shift"].some((id) => $(id).value)
+    || !isDefaultDate($("start").value, meta.minDate, meta.financeMinDate, meta.transferMinDate)
+    || !isDefaultDate($("end").value, meta.maxDate, meta.financeMaxDate, meta.transferMaxDate);
+  document.querySelector('[data-filter-control="actions"]').classList.toggle("hidden", !dirty);
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -577,16 +659,21 @@ async function refresh() {
   const canLoadFinance = !state.supabaseEnabled || hasFinancialAccess(state.user);
   const canLoadAudit = !state.supabaseEnabled || hasAuditAccess(state.user);
   const financeParams = financeQueryParams();
-  const [dashboard, finance, transferAudit, dailyResult] = await Promise.all([
+  // Os cadastros tem filtro proprio (a planilha cobre um periodo bem maior que
+  // os relatorios), por isso nao usam os parametros do filtro geral.
+  const [dashboard, finance, transferAudit, dailyResult, signups] = await Promise.all([
     canLoadOperational ? dataJson(`/api/dashboard?${params}`) : Promise.resolve(null),
     canLoadFinance ? dataJson(`/api/finance?${financeParams}`) : Promise.resolve(null),
     canLoadAudit ? dataJson(`/api/transfer-audit?${auditQueryParams()}`) : Promise.resolve(null),
     canLoadOperational ? dataJson(`/api/daily-result?${params}`) : Promise.resolve(null),
+    canLoadOperational ? dataJson(`/api/signups?${signupQueryParams()}`) : Promise.resolve(null),
   ]);
   state.dashboard = dashboard;
   state.finance = finance;
   state.transferAudit = transferAudit;
   state.dailyResult = dailyResult;
+  state.signups = signups;
+  applySignupRange();
   render();
 }
 
@@ -714,10 +801,597 @@ function renderDrivers() {
       ${sortHeader("drivers", "ar", "AR")}
       ${sortHeader("drivers", "caa", "CAA")}
       ${sortHeader("drivers", "ot", "OT")}
-      ${sortHeader("drivers", "lastRoute", "ULTIMA ROTA")}
+      ${sortHeader("drivers", "lastRoute", "ÚLTIMA ROTA")}
       ${sortHeader("drivers", "daysNoRoute", "SEM RODAR")}
     </tr></thead>
     <tbody>${rows}</tbody>`;
+}
+
+// ─── Novos cadastros (guia CADASTROS da planilha) ───────────────────────────
+
+const SIGNUP_STATUS_META = {
+  ativo: { label: "Rodando (até 7 dias)", tone: "good", helper: "Fizeram corrida até 7 dias antes da data de referência" },
+  morno: { label: "Sumidos (8 a 30 dias)", tone: "warn", helper: "Última corrida entre 8 e 30 dias atrás" },
+  inativo: { label: "Parados (+30 dias)", tone: "bad", helper: "Última corrida há mais de 30 dias" },
+  semRota: { label: "Escalou mas não rodou", tone: "warn", helper: "Entrou na escala e não fez nenhuma corrida" },
+  semRegistro: { label: "Sem registro", tone: "muted", helper: "Não aparece em nenhum relatório importado" },
+};
+
+function signupQueryParams() {
+  const params = new URLSearchParams();
+  Object.entries(state.signupFilter).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  return params.toString();
+}
+
+function readSignupFilterInputs() {
+  state.signupFilter = {
+    start: $("signupStart").value,
+    end: $("signupEnd").value,
+    praca: $("signupPraca").value,
+    origin: $("signupOrigin").value,
+    modal: $("signupModal").value,
+    status: $("signupStatus").value,
+    search: state.signupPeople.map((person) => person.value).join("|"),
+  };
+}
+
+// ─── Campo suspenso de entregador: escolhe varios ou digita ─────────────────
+
+const signupPeopleBox = {
+  root: null,
+  timer: null,
+  results: [],
+  term: "",
+};
+
+function signupPeopleInit() {
+  const root = $("signupPeople");
+  signupPeopleBox.root = root;
+  const input = root.querySelector('[data-role="input"]');
+
+  root.querySelector('[data-role="trigger"]').addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.querySelectorAll(".search-select.open, .multi-select.open").forEach((element) => {
+      if (element !== root) element.classList.remove("open");
+    });
+    root.classList.toggle("open");
+    if (root.classList.contains("open")) {
+      input.focus();
+      signupPeopleFetch(input.value);
+    }
+  });
+
+  input.addEventListener("input", () => {
+    clearTimeout(signupPeopleBox.timer);
+    signupPeopleBox.timer = setTimeout(() => signupPeopleFetch(input.value), 250);
+  });
+
+  // Enter usa o que foi digitado mesmo sem estar na lista: da para procurar um
+  // pedaco de nome ou um CPF que ainda nao apareceu.
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const term = input.value.trim();
+    if (!term) return;
+    signupPeopleAdd({ value: term, label: `"${term}"`, typed: true });
+    input.value = "";
+    signupPeopleFetch("");
+  });
+
+  root.addEventListener("click", (event) => event.stopPropagation());
+
+  root.querySelector('[data-role="options"]').addEventListener("click", (event) => {
+    const option = event.target.closest("[data-person]");
+    if (!option) return;
+    const person = signupPeopleBox.results.find((item) => item.value === option.dataset.person);
+    if (!person) return;
+    signupPeopleToggle({ value: person.value, label: person.label });
+  });
+
+  root.querySelector('[data-role="chips"]').addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-remove]");
+    if (!chip) return;
+    signupPeopleToggle({ value: chip.dataset.remove });
+  });
+}
+
+async function signupPeopleFetch(term) {
+  signupPeopleBox.term = term;
+  try {
+    const data = await dataJson(`/api/signups/people?q=${encodeURIComponent(term.trim())}`);
+    signupPeopleBox.results = data.people || [];
+  } catch (error) {
+    console.error(error);
+    signupPeopleBox.results = [];
+  }
+  signupPeopleRenderOptions();
+}
+
+function signupPeopleAdd(person) {
+  if (state.signupPeople.some((item) => item.value === person.value)) return;
+  state.signupPeople = [...state.signupPeople, person];
+  signupPeopleApply();
+}
+
+function signupPeopleToggle(person) {
+  const exists = state.signupPeople.some((item) => item.value === person.value);
+  state.signupPeople = exists
+    ? state.signupPeople.filter((item) => item.value !== person.value)
+    : [...state.signupPeople, person];
+  signupPeopleApply();
+}
+
+function signupPeopleApply() {
+  signupPeopleRender();
+  readSignupFilterInputs();
+  loadSignups().catch((error) => console.error(error));
+}
+
+function signupPeopleRenderOptions() {
+  const options = signupPeopleBox.root.querySelector('[data-role="options"]');
+  if (!signupPeopleBox.results.length) {
+    options.innerHTML = `<p class="multi-select-empty">Nenhum entregador encontrado. Tecle Enter para buscar assim mesmo.</p>`;
+    return;
+  }
+
+  options.innerHTML = signupPeopleBox.results.map((person) => {
+    const selected = state.signupPeople.some((item) => item.value === person.value);
+    const hint = [person.cpf ? `CPF ${person.cpf}` : "", person.id ? `ID ${person.id}` : ""].filter(Boolean).join(" - ");
+    return `
+      <button class="multi-select-option${selected ? " selected" : ""}" type="button" data-person="${escapeHtml(person.value)}">
+        <b>${escapeHtml(person.label)}</b>
+        <small>${escapeHtml(hint)}</small>
+      </button>`;
+  }).join("");
+}
+
+function signupPeopleRender() {
+  const root = signupPeopleBox.root;
+  if (!root) return;
+  const selected = state.signupPeople;
+  root.querySelector('[data-role="label"]').textContent = !selected.length
+    ? "Todos"
+    : selected.length === 1
+      ? selected[0].label
+      : `${selected.length} selecionados`;
+
+  root.querySelector('[data-role="chips"]').innerHTML = selected.map((person) => `
+    <span class="multi-select-chip">${escapeHtml(person.label)}<button type="button" data-remove="${escapeHtml(person.value)}" aria-label="Remover">x</button></span>`).join("");
+
+  signupPeopleRenderOptions();
+}
+
+async function loadSignups() {
+  if (state.supabaseEnabled && !hasOperationalAccess(state.user)) return;
+  state.signups = await dataJson(`/api/signups?${signupQueryParams()}`);
+  applySignupRange();
+  renderSignups();
+}
+
+// A primeira carga vem sem datas: o servidor devolve o intervalo inteiro da
+// planilha e os campos assumem esse periodo.
+function applySignupRange() {
+  const range = state.signups?.range;
+  if (!range) return;
+  if (!state.signupFilter.start && range.min) {
+    $("signupStart").value = range.min;
+    state.signupFilter.start = range.min;
+  }
+  if (!state.signupFilter.end && range.max) {
+    $("signupEnd").value = range.max;
+    state.signupFilter.end = range.max;
+  }
+}
+
+function fillSignupSelect(id, values, allLabel) {
+  const select = $(id);
+  const current = select.value;
+  select.innerHTML = [`<option value="">${allLabel}</option>`, ...values.map((value) => {
+    const option = typeof value === "string" ? { value, label: value } : value;
+    return `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`;
+  })].join("");
+  select.value = current;
+}
+
+function renderSignupSource() {
+  const { source, coverage, total } = state.signups;
+  const origin = source.error
+    ? `<b>planilha indisponível</b> (${escapeHtml(source.error)}) - mostrando a última cópia salva`
+    : `<b>${escapeHtml(source.origin)}</b>, guia <b>${escapeHtml(source.tab)}</b>${source.fetchedAt ? ` lida em ${fmtDateTime(source.fetchedAt)}` : ""}`;
+  const cobertura = coverage.operationalStart
+    ? `Relatórios operacionais carregados: <b>${brDate(coverage.operationalStart)} a ${brDate(coverage.operationalEnd)}</b>. "Última data que rodou" e "dias sem rodar" usam <b>${brDate(coverage.reference)}</b> como referência; cadastro sem turno nesse intervalo aparece como <b>sem registro</b>.`
+    : "Nenhum relatório operacional carregado: sem ele não dá para saber quem rodou.";
+
+  $("signupSource").className = `signup-source${source.error ? " error" : ""}`;
+  $("signupSource").innerHTML = `Fonte dos cadastros: ${origin} - ${fmtInt(total.signups)} linhas no filtro atual.<br />${cobertura}`;
+}
+
+function renderSignupKpis() {
+  const { total, coverage } = state.signups;
+  const best = total.bestDay ? `melhor dia ${total.bestDay.dateBr} com ${fmtInt(total.bestDay.signups)}` : "sem dias no filtro";
+  const cards = [
+    ["QUANTOS FORAM CADASTRADOS", fmtInt(total.signups), `${fmtInt(total.people)} pessoas diferentes - ${fmtInt(total.recadastros)} cadastros repetidos`, "orange"],
+    ["CADASTROS POR DIA (MÉDIA)", (total.perDay || 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 }), `${fmtInt(total.days)} dias com cadastro - ${best}`, "blue"],
+    ["JÁ RODARAM PELO MENOS 1 VEZ", fmtInt(total.activated), `${fmtPct(total.activationRate)} dos cadastros chegaram a fazer corrida`, "green"],
+    ["RODANDO AGORA (ÚLTIMOS 7 DIAS)", fmtInt(total.ativo), `Contado a partir de ${brDate(coverage.reference)}, último dia dos relatórios`, "green"],
+    ["PARARAM DE RODAR (+30 DIAS)", fmtInt(total.inativo), `E mais ${fmtInt(total.morno)} sumidos há 8 a 30 dias`, "bad"],
+    ["SEM REGISTRO NOS RELATÓRIOS", fmtInt(total.semRegistro), "Cadastrados que não aparecem em nenhum relatório importado", "yellow"],
+    ["CORRIDAS FEITAS POR ELES", fmtInt(total.orders), "Total de corridas dentro do período dos relatórios", "orange"],
+    ["TEMPO ATÉ A PRIMEIRA CORRIDA", total.avgDaysToFirstRoute === null
+      ? "--"
+      : `${total.avgDaysToFirstRoute.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} dias`,
+    "Média de quem se cadastrou dentro do período dos relatórios", "blue"],
+  ];
+
+  $("signupKpis").innerHTML = cards.map(([label, value, helper, tone]) => `
+    <article class="finance-kpi ${tone}">
+      <small>${label}</small>
+      <strong>${value}</strong>
+      <span>${helper}</span>
+    </article>`).join("");
+}
+
+// Verde sobre barra laranja some. O ciano claro tem contraste alto tanto com o
+// laranja quanto com o fundo escuro, e o numero ainda ganha uma etiqueta escura
+// para nunca ficar ilegivel por cima da barra.
+const SIGNUP_BAR_COLOR = "#ff6b12";
+const SIGNUP_ACTIVATED_COLOR = "#4cd9ff";
+
+function drawValueChip(ctx, text, centerX, centerY, color) {
+  ctx.font = "bold 10px Arial";
+  const width = ctx.measureText(text).width + 12;
+  const height = 16;
+  const x = centerX - width / 2;
+  const y = centerY - height / 2;
+
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, width, height, 5);
+  else ctx.rect(x, y, width, height);
+  ctx.fillStyle = "rgba(13,16,20,.92)";
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = color;
+  ctx.fillText(text, centerX - ctx.measureText(text).width / 2, centerY + 3.5);
+}
+
+function drawSignupChart(canvas, rows) {
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+
+  if (!rows.length) {
+    ctx.fillStyle = "#8e98a4";
+    ctx.font = "bold 13px Arial";
+    ctx.fillText("Sem cadastros no período filtrado.", 20, 46);
+    return;
+  }
+
+  const left = 46;
+  const right = width - 18;
+  const top = 34;
+  const base = height - 40;
+  const max = Math.max(1, ...rows.map((row) => row.signups));
+  const slot = (right - left) / rows.length;
+  const barWidth = Math.max(2, Math.min(slot * 0.62, 26));
+  const x = (index) => left + slot * index + slot / 2;
+  const y = (value) => base - (value / max) * (base - top);
+
+  ctx.font = "10px Arial";
+  for (let step = 0; step <= 4; step += 1) {
+    const value = (max / 4) * step;
+    const py = y(value);
+    ctx.strokeStyle = "#2c3238";
+    ctx.beginPath();
+    ctx.moveTo(left, py);
+    ctx.lineTo(right, py);
+    ctx.stroke();
+    ctx.fillStyle = "#8e98a4";
+    ctx.fillText(fmtInt(value), 8, py + 3);
+  }
+
+  rows.forEach((row, index) => {
+    ctx.fillStyle = SIGNUP_BAR_COLOR;
+    const barHeight = base - y(row.signups);
+    ctx.fillRect(x(index) - barWidth / 2, y(row.signups), barWidth, barHeight);
+  });
+
+  // Linha de ativados por cima das barras: mostra na mesma escala quantos
+  // daqueles cadastros viraram entregador rodando.
+  ctx.strokeStyle = SIGNUP_ACTIVATED_COLOR;
+  ctx.fillStyle = SIGNUP_ACTIVATED_COLOR;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const py = y(row.activated);
+    if (index) ctx.lineTo(x(index), py);
+    else ctx.moveTo(x(index), py);
+  });
+  ctx.stroke();
+  if (rows.length <= 40) {
+    rows.forEach((row, index) => {
+      ctx.beginPath();
+      ctx.arc(x(index), y(row.activated), 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  const labelStep = Math.max(1, Math.ceil(rows.length / 18));
+  ctx.font = "10px Arial";
+  rows.forEach((row, index) => {
+    if (index % labelStep && index !== rows.length - 1) return;
+    ctx.fillStyle = "#aaa";
+    const label = row.label;
+    ctx.fillText(label, x(index) - ctx.measureText(label).width / 2, base + 16);
+  });
+
+  if (rows.length <= 24) {
+    rows.forEach((row, index) => {
+      ctx.font = "bold 10px Arial";
+      ctx.fillStyle = "#f3f5f8";
+      const label = fmtInt(row.signups);
+      ctx.fillText(label, x(index) - ctx.measureText(label).width / 2, y(row.signups) - 6);
+
+      // Etiqueta do "ja rodaram": vai acima do ponto, ou abaixo quando encostaria
+      // no numero da barra.
+      const py = y(row.activated);
+      const collides = Math.abs(py - 12 - (y(row.signups) - 6)) < 16;
+      drawValueChip(ctx, fmtInt(row.activated), x(index), collides ? py + 14 : py - 12, SIGNUP_ACTIVATED_COLOR);
+    });
+  }
+
+  ctx.font = "bold 11px Arial";
+  ctx.fillStyle = SIGNUP_BAR_COLOR;
+  ctx.fillRect(left, 14, 18, 4);
+  ctx.fillText("Cadastros", left + 24, 21);
+  ctx.fillStyle = SIGNUP_ACTIVATED_COLOR;
+  ctx.fillRect(left + 110, 14, 18, 4);
+  ctx.fillText("Já rodaram", left + 134, 21);
+}
+
+const SIGNUP_MODAL_COLORS = { Motocicleta: "#ff6b12", Bicicleta: "#5b9bff" };
+const SIGNUP_MODAL_FALLBACK = ["#ffc233", "#c77dff", "#8e98a4"];
+
+function signupModalColor(modal, index) {
+  return SIGNUP_MODAL_COLORS[modal] || SIGNUP_MODAL_FALLBACK[index % SIGNUP_MODAL_FALLBACK.length];
+}
+
+// Barras lado a lado por periodo: da para ver se a entrada de bike cresceu mais
+// que a de moto sem precisar comparar duas telas.
+function drawSignupModalChart(canvas, rows, modals) {
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  ctx.clearRect(0, 0, width, height);
+
+  if (!rows.length || !modals.length) {
+    ctx.fillStyle = "#8e98a4";
+    ctx.font = "bold 13px Arial";
+    ctx.fillText("Sem cadastros no período filtrado.", 20, 46);
+    return;
+  }
+
+  const left = 46;
+  const right = width - 18;
+  const top = 34;
+  const base = height - 40;
+  const max = Math.max(1, ...rows.flatMap((row) => modals.map((modal) => row.modals[modal] || 0)));
+  const slot = (right - left) / rows.length;
+  const groupWidth = Math.min(slot * 0.72, 26 * modals.length);
+  const barWidth = Math.max(2, groupWidth / modals.length);
+  const center = (index) => left + slot * index + slot / 2;
+  const y = (value) => base - (value / max) * (base - top);
+
+  ctx.font = "10px Arial";
+  for (let step = 0; step <= 4; step += 1) {
+    const value = (max / 4) * step;
+    const py = y(value);
+    ctx.strokeStyle = "#2c3238";
+    ctx.beginPath();
+    ctx.moveTo(left, py);
+    ctx.lineTo(right, py);
+    ctx.stroke();
+    ctx.fillStyle = "#8e98a4";
+    ctx.fillText(fmtInt(value), 8, py + 3);
+  }
+
+  rows.forEach((row, index) => {
+    modals.forEach((modal, modalIndex) => {
+      const value = row.modals[modal] || 0;
+      const px = center(index) - groupWidth / 2 + barWidth * modalIndex;
+      ctx.fillStyle = signupModalColor(modal, modalIndex);
+      ctx.fillRect(px, y(value), Math.max(barWidth - 2, 1.5), base - y(value));
+      if (rows.length <= 16 && value) {
+        ctx.font = "bold 10px Arial";
+        const label = fmtInt(value);
+        ctx.fillText(label, px + (barWidth - 2) / 2 - ctx.measureText(label).width / 2, y(value) - 5);
+      }
+    });
+  });
+
+  const labelStep = Math.max(1, Math.ceil(rows.length / 18));
+  ctx.font = "10px Arial";
+  rows.forEach((row, index) => {
+    if (index % labelStep && index !== rows.length - 1) return;
+    ctx.fillStyle = "#aaa";
+    ctx.fillText(row.label, center(index) - ctx.measureText(row.label).width / 2, base + 16);
+  });
+
+  ctx.font = "bold 11px Arial";
+  let legendX = left;
+  modals.forEach((modal, index) => {
+    ctx.fillStyle = signupModalColor(modal, index);
+    ctx.fillRect(legendX, 14, 18, 4);
+    ctx.fillText(modal, legendX + 24, 21);
+    legendX += 24 + ctx.measureText(modal).width + 20;
+  });
+}
+
+function renderSignupChart() {
+  const rows = state.signups.series[state.signupPeriod] || [];
+  drawSignupChart($("signupChart"), rows);
+  const modals = state.signups.byModal.map((item) => item.key);
+  drawSignupModalChart($("signupModalChart"), rows, modals);
+}
+
+function signupGroupTable(tableId, tableName, rows, firstLabel) {
+  const body = sortedRows(rows, tableName).map((row) => `
+    <tr>
+      <td>${escapeHtml(row.key)}</td>
+      <td class="num">${fmtInt(row.signups)}</td>
+      <td class="num">${fmtPct(row.share)}</td>
+      <td class="num">${fmtInt(row.activated)}</td>
+      <td class="num ${row.activationRate >= 0.4 ? "good" : row.activationRate >= 0.25 ? "warn" : "bad"}">${fmtPct(row.activationRate)}</td>
+      <td class="num">${fmtInt(row.active7)}</td>
+      <td class="num">${fmtInt(row.orders)}</td>
+    </tr>`).join("");
+
+  $(tableId).innerHTML = `
+    <colgroup>
+      <col style="width:27%" /><col style="width:14%" /><col style="width:11%" />
+      <col style="width:13%" /><col style="width:12%" /><col style="width:11%" /><col style="width:12%" />
+    </colgroup>
+    <thead><tr>
+      ${sortHeader(tableName, "key", firstLabel)}
+      ${sortHeader(tableName, "signups", "CADASTROS")}
+      ${sortHeader(tableName, "share", "% TOTAL")}
+      ${sortHeader(tableName, "activated", "RODARAM")}
+      ${sortHeader(tableName, "activationRate", "ATIVAÇÃO")}
+      ${sortHeader(tableName, "active7", "ATIVOS 7D")}
+      ${sortHeader(tableName, "orders", "CORRIDAS")}
+    </tr></thead>
+    <tbody>${body || `<tr><td colspan="7">Sem dados no filtro.</td></tr>`}</tbody>`;
+}
+
+function renderSignupStatusCards() {
+  const { total } = state.signups;
+  const values = {
+    ativo: total.ativo,
+    morno: total.morno,
+    inativo: total.inativo,
+    semRota: total.semRota,
+    semRegistro: total.semRegistro,
+  };
+
+  $("signupStatusCards").innerHTML = Object.entries(SIGNUP_STATUS_META).map(([key, meta]) => `
+    <article class="signup-status-card clickable ${meta.tone} ${state.signupFilter.status === key ? "selected" : ""}" data-signup-status="${key}">
+      <small>${meta.label}</small>
+      <b>${fmtInt(values[key])}</b>
+      <span>${meta.helper}</span>
+    </article>`).join("");
+
+  $("signupStatusInfo").textContent = "Clique em um cartão para filtrar a tabela abaixo.";
+  $("signupModalChips").innerHTML = state.signups.byModal.map((row) => `
+    <span class="signup-chip">${escapeHtml(row.key)}: <b>${fmtInt(row.signups)}</b> (${fmtPct(row.share)}) - ativacao ${fmtPct(row.activationRate)}</span>`).join("");
+}
+
+function signupDaysCell(row) {
+  if (row.daysSinceActivity === null) return `<span class="signup-badge muted">-</span>`;
+  const tone = row.daysSinceActivity <= 7 ? "good" : row.daysSinceActivity <= 30 ? "warn" : "bad";
+  return `<span class="${tone}">${fmtInt(row.daysSinceActivity)} dias</span>`;
+}
+
+function renderSignupTable() {
+  const { rows, rowTotal } = state.signups;
+  $("signupTableInfo").textContent = `Exibindo ${fmtInt(rows.length)} de ${fmtInt(rowTotal)} cadastros`
+    + (rowTotal > rows.length ? " (refine o filtro para ver o resto)" : "");
+
+  const body = sortedRows(rows, "signupRows").map((row) => `
+    <tr>
+      <td>${row.dateBr}</td>
+      <td>${escapeHtml(row.id || "-")}</td>
+      <td>${escapeHtml(row.name)}</td>
+      <td>${escapeHtml(row.cpf || "-")}</td>
+      <td>${escapeHtml(row.modal)}</td>
+      <td>${escapeHtml(row.pracas.join(", "))}</td>
+      <td>${escapeHtml(row.origin)}</td>
+      <td>${row.lastActivityBr || "-"}</td>
+      <td class="num">${signupDaysCell(row)}</td>
+      <td class="num">${fmtInt(row.orders)}</td>
+      <td class="num">${fmtInt(row.shiftDays)}</td>
+      <td><span class="signup-badge ${SIGNUP_STATUS_META[row.status].tone}">${SIGNUP_STATUS_META[row.status].label}</span></td>
+    </tr>`).join("");
+
+  $("signupTable").innerHTML = `
+    <thead><tr>
+      ${sortHeader("signupRows", "date", "CADASTRO")}
+      ${sortHeader("signupRows", "id", "ID")}
+      ${sortHeader("signupRows", "name", "ENTREGADOR")}
+      ${sortHeader("signupRows", "cpf", "CPF")}
+      ${sortHeader("signupRows", "modal", "MODAL")}
+      ${sortHeader("signupRows", "praca", "PRAÇA")}
+      ${sortHeader("signupRows", "origin", "ORIGEM")}
+      ${sortHeader("signupRows", "lastActivity", "ÚLTIMA ROTA")}
+      ${sortHeader("signupRows", "daysSinceActivity", "SEM RODAR")}
+      ${sortHeader("signupRows", "orders", "CORRIDAS")}
+      ${sortHeader("signupRows", "shiftDays", "ESCALADO")}
+      ${sortHeader("signupRows", "status", "SITUAÇÃO")}
+    </tr></thead>
+    <tbody>${body || `<tr><td colspan="12">Nenhum cadastro com esse filtro.</td></tr>`}</tbody>`;
+}
+
+// "Limpar" so faz sentido quando existe algo para limpar: com o periodo cheio e
+// nenhuma escolha marcada, o botao some.
+function hasActiveSignupFilter() {
+  const range = state.signups?.range || {};
+  const { start, end, ...choices } = state.signupFilter;
+  if (Object.values(choices).some(Boolean)) return true;
+  return (start && start !== range.min) || (end && end !== range.max);
+}
+
+function renderSignupClearButton() {
+  $("signupClear").classList.toggle("hidden", !hasActiveSignupFilter());
+}
+
+function renderSignups() {
+  if (!state.signups) return;
+  fillSignupSelect("signupPraca", state.signups.options.pracas, "Todas");
+  fillSignupSelect("signupOrigin", state.signups.options.origins, "Todas");
+  fillSignupSelect("signupModal", state.signups.options.modals, "Todos");
+  fillSignupSelect("signupStatus", state.signups.options.statuses, "Todas");
+  renderSignupSource();
+  renderSignupKpis();
+  renderSignupChart();
+  signupGroupTable("signupPracaTable", "signupPraca", state.signups.byPraca, "PRAÇA");
+  signupGroupTable("signupOriginTable", "signupOrigin", state.signups.byOrigin, "ORIGEM");
+  renderSignupStatusCards();
+  renderSignupTable();
+  renderSignupClearButton();
+}
+
+function exportSignupsCsv() {
+  if (!state.signups?.rows.length) return;
+  const header = ["Data cadastro", "ID", "Entregador", "CPF", "Modal", "Praça", "Origem", "Última vez que rodou", "Dias sem rodar", "Corridas", "Dias escalado", "Situação"];
+  const body = state.signups.rows.map((row) => [
+    row.dateBr,
+    row.id,
+    row.name,
+    row.cpf,
+    row.modal,
+    row.pracas.join(" / "),
+    row.origin,
+    row.lastActivityBr,
+    row.daysSinceActivity === null ? "" : row.daysSinceActivity,
+    row.orders,
+    row.shiftDays,
+    SIGNUP_STATUS_META[row.status].label,
+  ]);
+
+  const csv = [header, ...body]
+    .map((line) => line.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";"))
+    .join("\r\n");
+
+  const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `cadastros-${state.signupFilter.start || "inicio"}-a-${state.signupFilter.end || "fim"}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function renderFinance() {
@@ -1815,7 +2489,7 @@ function renderTrendCharts(targetId = "trendCharts") {
 function setTrendPeriod(period) {
   if (!TREND_PERIODS.includes(period)) return;
   state.trendPeriod = period;
-  document.querySelectorAll(".chart-period-btn").forEach((button) => {
+  document.querySelectorAll(".chart-period-btn[data-period]").forEach((button) => {
     button.classList.toggle("active", button.dataset.period === period);
   });
   renderTrendCharts();
@@ -1923,6 +2597,8 @@ function render() {
     renderWeeklyCharts("cadastroWeeklyCharts");
     renderTrendCharts();
   }
+  renderClearFiltersButton();
+  if (state.signups) renderSignups();
   if (state.finance) renderFinance();
   if (state.transferAudit) renderAudit();
   renderDailyResult();
@@ -2007,7 +2683,10 @@ function renderDailyResult() {
 
 function configureFiltersForView(view) {
   const filters = document.querySelector(".filters");
-  if (view === "usuarios" || view === "upload") {
+  // Novos cadastros tem barra propria: dois conjuntos de filtro na mesma tela
+  // so criam duvida sobre qual esta valendo.
+  const onSignupPage = view === "operacional" && state.opPage === "cadastro" && state.cadastroView === "novos";
+  if (view === "usuarios" || view === "upload" || onSignupPage) {
     filters.classList.add("hidden");
     return;
   }
@@ -2021,6 +2700,7 @@ function configureFiltersForView(view) {
         : ["city", "start", "end", "actions"];
     element.classList.toggle("hidden", Boolean(allowed) && !allowed.includes(control));
   });
+  renderClearFiltersButton();
 }
 
 function applyFinanceDateDefaults() {
@@ -2109,6 +2789,7 @@ function setView(view) {
     applyUploadCardAccess();
     loadBiFiles();
   }
+  saveLastView();
 }
 
 function setOperationalPage(page) {
@@ -2139,7 +2820,7 @@ function setOperationalPage(page) {
     },
     cadastro: {
       title: "Dash Operacional - Cadastro",
-      subtitle: "Grafico de linhas no topo, resumo por cidade e cadastro completo dos entregadores.",
+      subtitle: "Novos cadastros por dia, de onde vem cada um e a última data que rodou; na segunda aba, a base completa de entregadores.",
     },
     resultado: {
       title: "Dash Operacional - Resultado Diario",
@@ -2153,6 +2834,8 @@ function setOperationalPage(page) {
 
   $("pageTitle").textContent = pageCopy[page].title;
   $("pageSubtitle").textContent = pageCopy[page].subtitle;
+  if (page === "cadastro") setCadastroView(state.cadastroView);
+  saveLastView();
 }
 
 document.querySelectorAll(".side-link").forEach((button) => {
@@ -2304,7 +2987,7 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("click", () => {
-  document.querySelectorAll(".search-select.open").forEach((select) => select.classList.remove("open"));
+  document.querySelectorAll(".search-select.open, .multi-select.open").forEach((select) => select.classList.remove("open"));
 });
 
 $("loginForm").addEventListener("submit", async (event) => {
@@ -2472,6 +3155,7 @@ $("resetForm").addEventListener("submit", async (event) => {
 
 $("logoutButton").addEventListener("click", () => {
   clearActiveSession();
+  try { localStorage.removeItem(LAST_VIEW_KEY); } catch { /* sem localStorage */ }
   state.accessToken = "";
   state.refreshToken = "";
   state.user = null;
@@ -2680,8 +3364,86 @@ document.querySelectorAll(".chart-metric-btn").forEach((button) => {
   button.addEventListener("click", () => setChartMetric(button.dataset.metric));
 });
 
-document.querySelectorAll(".chart-period-btn").forEach((button) => {
+document.querySelectorAll(".chart-period-btn[data-period]").forEach((button) => {
   button.addEventListener("click", () => setTrendPeriod(button.dataset.period));
+});
+
+// ─── Eventos da pagina de cadastro ──────────────────────────────────────────
+
+function setCadastroView(view) {
+  state.cadastroView = view;
+  document.querySelectorAll(".cadastro-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.cadastroView === view);
+  });
+  document.querySelectorAll(".cadastro-view").forEach((section) => {
+    section.classList.toggle("active", section.id === `cadastro-${view}`);
+  });
+  configureFiltersForView(state.view);
+  saveLastView();
+  // O canvas so mede certo depois de visivel: redesenha ao abrir a aba.
+  if (view === "novos" && state.signups) renderSignupChart();
+}
+
+document.querySelectorAll(".cadastro-tab").forEach((button) => {
+  button.addEventListener("click", () => setCadastroView(button.dataset.cadastroView));
+});
+
+document.querySelectorAll("[data-signup-period]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.signupPeriod = button.dataset.signupPeriod;
+    document.querySelectorAll("[data-signup-period]").forEach((item) => {
+      item.classList.toggle("active", item.dataset.signupPeriod === state.signupPeriod);
+    });
+    if (state.signups) renderSignupChart();
+  });
+});
+
+["signupStart", "signupEnd", "signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    readSignupFilterInputs();
+    loadSignups().catch((error) => console.error(error));
+  });
+});
+
+signupPeopleInit();
+
+$("signupClear").addEventListener("click", () => {
+  ["signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => { $(id).value = ""; });
+  state.signupPeople = [];
+  signupPeopleRender();
+  $("signupStart").value = state.signups?.range.min || "";
+  $("signupEnd").value = state.signups?.range.max || "";
+  readSignupFilterInputs();
+  loadSignups().catch((error) => console.error(error));
+});
+
+$("signupStatusCards").addEventListener("click", (event) => {
+  const card = event.target.closest("[data-signup-status]");
+  if (!card) return;
+  const status = card.dataset.signupStatus;
+  $("signupStatus").value = state.signupFilter.status === status ? "" : status;
+  readSignupFilterInputs();
+  loadSignups().catch((error) => console.error(error));
+});
+
+$("signupExport").addEventListener("click", exportSignupsCsv);
+
+$("signupSync").addEventListener("click", async () => {
+  const button = $("signupSync");
+  button.disabled = true;
+  button.textContent = "Lendo planilha...";
+  try {
+    state.signups = await dataJson(`/api/signups/refresh?${signupQueryParams()}`, { method: "POST" });
+    applySignupRange();
+    renderSignups();
+    button.textContent = "Atualizado";
+  } catch (error) {
+    console.error(error);
+    button.textContent = "Erro ao atualizar";
+  } finally {
+    button.disabled = false;
+    setTimeout(() => { button.textContent = "Atualizar planilha"; }, 1800);
+  }
 });
 
 $("dailyResultCities").addEventListener("click", (event) => {
@@ -2738,6 +3500,15 @@ document.querySelectorAll(".password-toggle").forEach((button) => {
     button.setAttribute("aria-label", visible ? "Mostrar senha" : "Ocultar senha");
   });
 });
+
+// Com sessao guardada a tela de login nem chega a aparecer no F5: o app abre
+// direto em modo carregando e so cai para o login se a sessao for recusada.
+const bootSession = getActiveSession();
+if (bootSession) {
+  document.body.classList.add("booting");
+  $("loginScreen").classList.add("hidden");
+  $("appShell").classList.remove("hidden");
+}
 
 Promise.all([loadAuthConfig(), loadMeta()])
   .then(async () => {

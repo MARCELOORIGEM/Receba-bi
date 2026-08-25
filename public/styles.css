@@ -3553,6 +3553,344 @@ th.num { text-align: center; }
   50% { transform: translateY(-10px); }
 }
 
+/* F5 com sessao salva: nada de piscar a tela de login, so o aviso de carga. */
+body.booting .workspace { opacity: .3; pointer-events: none; }
+body.booting .sidebar { pointer-events: none; }
+
+body.booting .app-shell::after {
+  content: "Carregando seus dados...";
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 60;
+  transform: translate(-50%, -50%);
+  padding: 14px 22px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--ink-2);
+  font-weight: 800;
+  box-shadow: 0 18px 40px rgba(0,0,0,.5);
+}
+
+/* ── Cadastro: novos cadastros ─────────────────────────────────────────── */
+
+.cadastro-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.cadastro-tab {
+  min-width: 176px;
+  height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 900;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.cadastro-tab.active {
+  background: var(--orange);
+  color: #fff;
+  border-color: var(--orange-2);
+}
+
+.cadastro-view { display: none; }
+.cadastro-view.active { display: block; }
+
+.signup-toolbar {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr)) minmax(180px, 1.4fr);
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.signup-people-field { min-width: 0; }
+
+/* Campo de entregador: escolhe varios da lista ou digita e tecla Enter. */
+.multi-select { position: relative; width: 100%; }
+
+.multi-select-trigger {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--orange-2);
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.multi-select-trigger span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.multi-select-trigger i {
+  flex: 0 0 10px;
+  width: 10px;
+  height: 10px;
+  border-right: 1.5px solid var(--orange-2);
+  border-bottom: 1.5px solid var(--orange-2);
+  transform: rotate(45deg) translateY(-2px);
+}
+
+.multi-select.open .multi-select-trigger i { transform: rotate(225deg) translate(-2px, -1px); }
+
+.multi-select-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 3px);
+  z-index: 30;
+  display: none;
+  min-width: 280px;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--panel);
+  box-shadow: 0 16px 30px rgba(0,0,0,.5);
+}
+
+.multi-select.open .multi-select-panel { display: block; }
+
+.multi-select-panel .search-box { background: var(--panel-2); border-bottom: 1px solid var(--line-2); }
+.multi-select-panel .search-box input { background: var(--panel-2); color: var(--ink); font-size: 13px; height: 32px; width: 100%; border-radius: 0; }
+.multi-select-panel .search-box input:focus { border: 0; }
+
+.multi-select-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.multi-select-chips:empty { display: none; }
+
+.multi-select-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 9px;
+  border: 1px solid var(--orange-solid);
+  border-radius: 999px;
+  background: rgba(255,107,18,.14);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.multi-select-chip button {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255,255,255,.12);
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+  padding: 0;
+}
+
+.multi-select-options { max-height: 260px; overflow-y: auto; }
+
+.multi-select-option {
+  width: 100%;
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.multi-select-option b { font-size: 12px; color: var(--ink); }
+.multi-select-option small { font-size: 10.5px; color: var(--muted); font-weight: 700; }
+.multi-select-option:hover { background: rgba(255,255,255,.05); }
+.multi-select-option.selected { background: rgba(255,107,18,.16); }
+.multi-select-option.selected b::before { content: "\2713 "; color: var(--orange-2); }
+
+.multi-select-empty { padding: 12px; color: var(--muted); font-size: 11.5px; font-weight: 700; }
+
+.signup-toolbar-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.signup-ghost {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.signup-ghost:hover { border-color: var(--orange-solid); color: var(--ink); }
+.signup-ghost[disabled] { opacity: .55; cursor: progress; }
+
+/* A base operacional cobre menos dias que a planilha de cadastro: sem dizer de
+   onde vem cada numero, "sem registro" parece erro do sistema. */
+.signup-source {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
+.signup-source b { color: var(--ink-2); }
+.signup-source.error b { color: var(--orange-2); }
+
+.signup-kpis { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+
+.signup-chart-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px;
+  background: var(--panel-2);
+}
+
+.signup-chart-wrap canvas { display: block; width: 100%; min-width: 720px; height: auto; }
+
+.signup-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+/* As duas tabelas lado a lado cabem na coluna: largura fixa por coluna, rotulo
+   quebrando em duas linhas e nenhuma barra de rolagem horizontal. */
+.signup-split .table-wrap { overflow-x: hidden; }
+.signup-split table { min-width: 0; table-layout: fixed; }
+.signup-split th { font-size: 10px; }
+.signup-split .sort-button { min-height: 40px; padding: 0 3px; font-size: 10px; line-height: 1.2; }
+.signup-split .sort-button span { white-space: normal; }
+.signup-split td { padding: 9px 4px; font-size: 11.5px; }
+.signup-split td:first-child { text-align: left; padding-left: 10px; font-weight: 800; }
+.signup-split th:first-child .sort-button { justify-content: flex-start; padding-left: 10px; }
+
+#signupTable { min-width: 1040px; }
+#signupTable th { font-size: 10px; }
+#signupTable .sort-button { min-height: 40px; padding: 0 4px; font-size: 10px; line-height: 1.2; }
+#signupTable .sort-button span { white-space: normal; }
+#signupTable td { padding: 9px 5px; font-size: 11.5px; }
+
+.signup-status-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.signup-status-card {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.signup-status-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+}
+
+.signup-status-card b { display: block; margin-top: 8px; font-size: 22px; }
+.signup-status-card span { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; font-weight: 700; line-height: 1.4; }
+.signup-status-card.good { border-left-color: var(--green); }
+.signup-status-card.good b { color: var(--green); }
+.signup-status-card.warn { border-left-color: var(--yellow); }
+.signup-status-card.warn b { color: var(--yellow); }
+.signup-status-card.bad { border-left-color: var(--orange-2); }
+.signup-status-card.bad b { color: var(--orange-2); }
+.signup-status-card.muted b { color: var(--ink-2); }
+
+.signup-status-card.clickable { cursor: pointer; }
+.signup-status-card.clickable:hover { border-color: var(--orange-solid); }
+.signup-status-card.selected { border-color: var(--orange-solid); box-shadow: 0 0 0 1px var(--orange-solid) inset; }
+
+.signup-modal-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.signup-chip {
+  padding: 6px 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.signup-chip b { color: var(--ink); }
+
+.signup-badge {
+  display: inline-block;
+  padding: 4px 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.signup-badge.good { border-color: rgba(0,200,150,.4); background: rgba(0,200,150,.12); color: var(--green); }
+.signup-badge.warn { border-color: rgba(255,190,11,.42); background: rgba(255,190,11,.12); color: var(--yellow); }
+.signup-badge.bad { border-color: rgba(255,91,24,.42); background: rgba(255,91,24,.12); color: var(--orange-2); }
+.signup-badge.muted { color: var(--muted); }
+
+.signup-empty {
+  padding: 26px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+@media (max-width: 1180px) {
+  .signup-toolbar { grid-template-columns: repeat(3, 1fr); }
+  .signup-kpis { grid-template-columns: repeat(2, 1fr); }
+  .signup-split { grid-template-columns: 1fr; }
+  .signup-status-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
 @media (max-width: 1180px) {
   .login-screen { grid-template-columns: 1fr; }
   .login-hero { height: min(620px, calc(100vh - 48px)); }

@@ -25,9 +25,17 @@ function configuredBiDir() {
 const BI_DIR = configuredBiDir();
 const FINANCE_DIR = path.join(BI_DIR, "FINANCEIRO");
 const TRANSFEERA_DIR = path.join(BI_DIR, "TRANSFEERA");
+const SIGNUP_DIR = path.join(BI_DIR, "CADASTROS");
 const supabase = createSupabaseApi();
 
-const UPLOAD_TARGETS = ["CURITIBA", "GOIANIA", "RIO DE JANEIRO", "SÃO PAULO", "FINANCEIRO", "TRANSFEERA"];
+// A guia CADASTROS vive numa planilha do Google: o servidor le direto de la e
+// guarda uma copia em disco para nao ficar sem dados se a internet cair.
+const SIGNUP_SHEET_ID = process.env.CADASTROS_SHEET_ID || "1OYmE_rSu9DPMtrDFsCnJB0Y7-Fq2RyGkeBasPKL5vtI";
+const SIGNUP_SHEET_TAB = process.env.CADASTROS_SHEET_TAB || "CADASTROS";
+const SIGNUP_CACHE_FILE = path.join(SIGNUP_DIR, "_cadastros-google.csv");
+const SIGNUP_REFRESH_MINUTES = Number(process.env.CADASTROS_REFRESH_MINUTES || 30);
+
+const UPLOAD_TARGETS = ["CURITIBA", "GOIANIA", "RIO DE JANEIRO", "SÃO PAULO", "FINANCEIRO", "TRANSFEERA", "CADASTROS"];
 
 const biUpload = multer({
   storage: multer.diskStorage({
@@ -214,7 +222,7 @@ function walkXlsx(dir) {
 function readRows() {
   const files = walkXlsx(BI_DIR).filter((file) => {
     const relative = normalizeText(path.relative(BI_DIR, file)).toUpperCase();
-    return !relative.startsWith("FINANCEIRO") && !relative.startsWith("TRANSFEERA");
+    return !relative.startsWith("FINANCEIRO") && !relative.startsWith("TRANSFEERA") && !relative.startsWith("CADASTROS");
   });
   const rows = [];
 
@@ -408,9 +416,235 @@ function readTransferRows() {
   return rows.filter((row) => row.cpf || row.name || row.value);
 }
 
+// ---------------------------------------------------------------------------
+// CADASTROS (guia CADASTROS da planilha do Google)
+// ---------------------------------------------------------------------------
+
+// A planilha e preenchida na mao: praca, modal e origem chegam com acento,
+// caixa e grafia trocados. Sem normalizar, "capitação" e "capitacao" viravam
+// duas linhas diferentes no resumo.
+const PRACA_LIST = ["Guaianases", "Itaquera", "Jardim Angélica", "Mooca", "Paulista", "Penha", "Santana", "Santo Amaro"];
+const PRACA_BY_KEY = new Map(PRACA_LIST.map((praca) => [normalizeText(praca).toLowerCase(), praca]));
+
+const ORIGIN_RULES = [
+  [/indicacao\s*telegram/, "Indicação Telegram"],
+  [/telegram/, "Telegram"],
+  [/cap[ioa]?t|capoit/, "Captação"],
+  [/retorno/, "Retorno"],
+  [/^base$/, "Base"],
+  [/wall?[ac]?ce|wallace/, "Wallace"],
+  [/os[vw]a[nl]?d/, "Oswaldo"],
+  [/^jm$/, "JM"],
+  [/junior/, "Junior"],
+  [/geovane/, "Geovane"],
+  [/ferinha/, "Ferinha"],
+];
+
+function titleCase(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/(^|\s|-)([a-zà-ú])/g, (_all, prefix, letter) => prefix + letter.toUpperCase());
+}
+
+function normalizePraca(value) {
+  const key = normalizeText(value).toLowerCase().replace(/^"+|"+$/g, "").trim();
+  if (!key) return "";
+  return PRACA_BY_KEY.get(key) || "";
+}
+
+// "Penha, Itaquera" e `"Mooca, Penha", Penha` sao a mesma coisa: uma lista de
+// pracas com aspas sobrando do copiar/colar.
+function splitPracas(value) {
+  const parts = String(value ?? "").split(",").map((part) => normalizePraca(part)).filter(Boolean);
+  return [...new Set(parts)];
+}
+
+function normalizeOrigin(value) {
+  const plain = normalizeText(value).toLowerCase().replace(/["']/g, "").trim();
+  if (!plain) return "Sem origem";
+  const rule = ORIGIN_RULES.find(([pattern]) => pattern.test(plain));
+  return rule ? rule[1] : titleCase(String(value ?? "").trim());
+}
+
+function normalizeModal(value) {
+  const plain = normalizeText(value).toLowerCase();
+  if (plain.includes("moto")) return "Motocicleta";
+  if (plain.includes("bici") || plain.includes("bike")) return "Bicicleta";
+  return plain ? titleCase(value) : "Sem modal";
+}
+
+function normalizeDriverId(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 20 ? digits : "";
+}
+
+// CSV do Google: campos com virgula vem entre aspas ("Penha, Itaquera"), entao
+// nao da para quebrar so no split(",").
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char !== '"') { field += char; continue; }
+      if (text[index + 1] === '"') { field += '"'; index += 1; continue; }
+      quoted = false;
+      continue;
+    }
+    if (char === '"') { quoted = true; continue; }
+    if (char === ",") { row.push(field); field = ""; continue; }
+    if (char === "\r") continue;
+    if (char === "\n") { row.push(field); rows.push(row); row = []; field = ""; continue; }
+    field += char;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+function csvToObjects(text) {
+  const [header, ...body] = parseCsv(String(text ?? "").replace(/^﻿/, ""));
+  if (!header) return [];
+  return body.map((cells) => {
+    const item = {};
+    header.forEach((name, index) => {
+      const key = String(name ?? "").trim();
+      if (key) item[key] = cells[index] ?? "";
+    });
+    return item;
+  });
+}
+
+function signupFromRaw(raw, source) {
+  const date = parseDate(rawValue(raw, ["DATA", "Data", "Data do cadastro"]));
+  const id = normalizeDriverId(rawValue(raw, ["ID", "ID do entregador"]));
+  const cpf = normalizeCpf(rawValue(raw, ["CPF", "CPF do entregador"]));
+  const name = String(rawValue(raw, ["ENTREGADOR", "NOME", "Nome do entregador"]) ?? "").replace(/\s+/g, " ").trim();
+  if (!date || (!id && !cpf && !name)) return null;
+
+  const pracas = splitPracas(rawValue(raw, ["PRAÇA", "PRACA", "Praça", "REGIÃO", "REGIAO"]));
+  const iso = isoDate(date);
+
+  return {
+    date: iso,
+    dateBr: brDate(date),
+    week: weekStartIso(iso),
+    month: iso.slice(0, 7),
+    id,
+    cpf,
+    name: name || "Sem nome",
+    modal: normalizeModal(rawValue(raw, ["MODAL", "Modal", "Modalidade"])),
+    praca: pracas[0] || "Sem praça",
+    pracas: pracas.length ? pracas : ["Sem praça"],
+    origin: normalizeOrigin(rawValue(raw, ["ORIGEM", "Origem"])),
+    source,
+  };
+}
+
+// Mesma pessoa cadastrada duas vezes no mesmo dia (planilha colada em duplicata)
+// conta uma vez so; cadastro repetido em outro dia continua aparecendo e vira o
+// indicador "recadastros".
+function dedupeSignups(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const key = `${row.id || row.cpf || row.name}||${row.date}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function readSignupFiles() {
+  const rows = [];
+  for (const file of walkXlsx(SIGNUP_DIR)) {
+    const workbook = XLSX.readFile(file, { cellDates: true });
+    for (const sheetName of workbook.SheetNames) {
+      const json = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
+      for (const raw of json) {
+        const row = signupFromRaw(raw, path.relative(__dirname, file));
+        if (row) rows.push(row);
+      }
+    }
+  }
+  return rows;
+}
+
+function readSignupCache() {
+  if (!fs.existsSync(SIGNUP_CACHE_FILE)) return [];
+  const rows = csvToObjects(fs.readFileSync(SIGNUP_CACHE_FILE, "utf8"))
+    .map((raw) => signupFromRaw(raw, "Google Sheets (copia local)"))
+    .filter(Boolean);
+  return rows;
+}
+
+function signupSheetUrl() {
+  return `https://docs.google.com/spreadsheets/d/${SIGNUP_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SIGNUP_SHEET_TAB)}`;
+}
+
+async function fetchSignupSheet() {
+  const response = await fetch(signupSheetUrl(), { redirect: "follow" });
+  if (!response.ok) throw new Error(`Google respondeu ${response.status}`);
+  const text = await response.text();
+  if (/<html/i.test(text.slice(0, 200))) throw new Error("A planilha nao esta publica para leitura por link.");
+  const rows = csvToObjects(text).map((raw) => signupFromRaw(raw, "Google Sheets")).filter(Boolean);
+  if (!rows.length) throw new Error("A guia veio vazia.");
+
+  fs.mkdirSync(SIGNUP_DIR, { recursive: true });
+  fs.writeFileSync(SIGNUP_CACHE_FILE, text, "utf8");
+  return rows;
+}
+
+let signupSheetRows = readSignupCache();
+let signupStatus = {
+  sheetId: SIGNUP_SHEET_ID,
+  tab: SIGNUP_SHEET_TAB,
+  origin: signupSheetRows.length ? "copia local" : "sem dados",
+  fetchedAt: "",
+  error: "",
+  sheetRows: signupSheetRows.length,
+  fileRows: 0,
+};
+
+function mergeSignups() {
+  const fileRows = readSignupFiles();
+  signupStatus.fileRows = fileRows.length;
+  return dedupeSignups([...signupSheetRows, ...fileRows]);
+}
+
+async function refreshSignupSheet() {
+  try {
+    signupSheetRows = await fetchSignupSheet();
+    signupStatus = {
+      ...signupStatus,
+      origin: "Google Sheets",
+      fetchedAt: new Date().toISOString(),
+      error: "",
+      sheetRows: signupSheetRows.length,
+    };
+  } catch (error) {
+    const cached = readSignupCache();
+    if (cached.length) signupSheetRows = cached;
+    signupStatus = {
+      ...signupStatus,
+      origin: cached.length ? "copia local" : "sem dados",
+      error: error.message || "Falha ao ler a planilha.",
+      sheetRows: signupSheetRows.length,
+    };
+    console.error(`Cadastros: falha ao ler a planilha do Google (${signupStatus.error})`);
+  }
+  signupData = mergeSignups();
+  return signupData;
+}
+
 let data = readRows();
 let financeData = readFinanceRows();
 let transferData = readTransferRows();
+let signupData = mergeSignups();
+let activityIndex = buildActivityIndex();
 let loadedAt = new Date();
 let sourceFiles = walkXlsx(BI_DIR);
 
@@ -418,6 +652,8 @@ function reloadData() {
   data = readRows();
   financeData = readFinanceRows();
   transferData = readTransferRows();
+  signupData = mergeSignups();
+  activityIndex = buildActivityIndex();
   loadedAt = new Date();
   sourceFiles = walkXlsx(BI_DIR);
   return data;
@@ -625,6 +861,333 @@ function buildDashboard(rows) {
     weekly,
     series,
     colorForPercent,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cruzamento cadastro x operacao: quem rodou, quando rodou pela ultima vez e
+// quanto ganhou. A chave e o ID do entregador; CPF entra como reserva porque
+// alguns cadastros antigos vieram sem ID.
+// ---------------------------------------------------------------------------
+function buildActivityIndex() {
+  const byId = new Map();
+  const byCpf = new Map();
+
+  const bucket = (map, key) => {
+    if (!key) return null;
+    if (!map.has(key)) {
+      map.set(key, {
+        firstRoute: "",
+        lastRoute: "",
+        lastShift: "",
+        orders: 0,
+        shiftDays: new Set(),
+        cities: new Map(),
+        hotzones: new Map(),
+        lastEarning: "",
+        earned: 0,
+        name: "",
+      });
+    }
+    return map.get(key);
+  };
+
+  const countIn = (map, key) => {
+    if (!key) return;
+    map.set(key, (map.get(key) || 0) + 1);
+  };
+
+  const addOperational = (entry, row) => {
+    if (!entry) return;
+    entry.name = entry.name || row.name;
+    entry.shiftDays.add(row.date);
+    if (row.date > entry.lastShift) entry.lastShift = row.date;
+    countIn(entry.cities, row.city);
+    countIn(entry.hotzones, row.hotzone);
+    if (row.orders > 0) {
+      entry.orders += row.orders;
+      if (!entry.firstRoute || row.date < entry.firstRoute) entry.firstRoute = row.date;
+      if (row.date > entry.lastRoute) entry.lastRoute = row.date;
+    }
+  };
+
+  for (const row of data) {
+    if (!row.date) continue;
+    addOperational(bucket(byId, normalizeDriverId(row.id)), row);
+    addOperational(bucket(byCpf, normalizeCpf(row.cpf)), row);
+  }
+
+  const addFinance = (entry, row) => {
+    if (!entry || !row.date) return;
+    entry.earned += row.totalDaily || 0;
+    if (row.date > entry.lastEarning) entry.lastEarning = row.date;
+  };
+
+  for (const row of financeData) {
+    addFinance(bucket(byId, normalizeDriverId(row.id)), row);
+    addFinance(bucket(byCpf, normalizeCpf(row.cpf)), row);
+  }
+
+  return { byId, byCpf };
+}
+
+function mostFrequent(map) {
+  return [...map.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+}
+
+function daysBetween(fromIso, toIso) {
+  const from = parseDate(fromIso);
+  const to = parseDate(toIso);
+  if (!from || !to) return null;
+  return Math.round((to - from) / 86400000);
+}
+
+function maxIso(rows, key) {
+  let max = "";
+  for (const row of rows) {
+    const value = row[key];
+    if (value && value > max) max = value;
+  }
+  return max;
+}
+
+function minIso(rows, key) {
+  let min = "";
+  for (const row of rows) {
+    const value = row[key];
+    if (value && (!min || value < min)) min = value;
+  }
+  return min;
+}
+
+// "Dias sem rodar" contado a partir de hoje diria que todo mundo esta parado
+// quando o ultimo relatorio importado e de semanas atras. A referencia e o
+// ultimo dia coberto pelos relatorios.
+function activityReference() {
+  const operationalEnd = maxIso(data, "date");
+  const financeEnd = maxIso(financeData, "date");
+  const latest = [operationalEnd, financeEnd].filter(Boolean).sort().at(-1) || "";
+  return {
+    reference: latest || isoDate(new Date()),
+    operationalStart: minIso(data, "date"),
+    operationalEnd,
+    financeStart: minIso(financeData, "date"),
+    financeEnd,
+  };
+}
+
+const SIGNUP_STATUS_LABELS = {
+  ativo: "Rodando (até 7 dias)",
+  morno: "Sumidos (8 a 30 dias)",
+  inativo: "Parados (+30 dias)",
+  semRota: "Escalou mas não rodou",
+  semRegistro: "Sem registro nos relatórios",
+};
+
+function enrichSignup(row, reference, operationalStart = "") {
+  const entry = (row.id && activityIndex.byId.get(row.id))
+    || (row.cpf && activityIndex.byCpf.get(row.cpf))
+    || null;
+
+  const lastRoute = entry?.lastRoute || "";
+  const lastEarning = entry?.lastEarning || "";
+  const lastActivity = [lastRoute, lastEarning].filter(Boolean).sort().at(-1) || "";
+  const daysSinceRoute = lastRoute ? daysBetween(lastRoute, reference) : null;
+  const daysSinceActivity = lastActivity ? daysBetween(lastActivity, reference) : null;
+  // Tempo ate a primeira rota so vale para quem se cadastrou dentro do periodo
+  // dos relatorios: quem entrou em novembro e teve a primeira rota registrada em
+  // junho (quando comeca o relatorio importado) inflaria a media sem significar
+  // nada. Rota anterior ao cadastro tambem sai da conta: e recadastro.
+  const firstRoute = entry?.firstRoute || "";
+  const inCoverage = Boolean(operationalStart) && row.date >= operationalStart;
+  const daysToFirstRoute = firstRoute && inCoverage && firstRoute >= row.date ? daysBetween(row.date, firstRoute) : null;
+
+  // Rodou = fez corrida no relatorio operacional ou recebeu no financeiro.
+  // Quem aparece so na escala, sem corrida e sem ganho, e "escalou e nao rodou".
+  const status = !entry
+    ? "semRegistro"
+    : !lastActivity
+      ? "semRota"
+      : daysSinceActivity <= 7
+        ? "ativo"
+        : daysSinceActivity <= 30
+          ? "morno"
+          : "inativo";
+
+  return {
+    ...row,
+    matched: Boolean(entry),
+    orders: entry?.orders || 0,
+    shiftDays: entry?.shiftDays.size || 0,
+    city: entry ? mostFrequent(entry.cities) : "",
+    hotzone: entry ? mostFrequent(entry.hotzones) : "",
+    operationalName: entry?.name || "",
+    earned: entry?.earned || 0,
+    firstRoute,
+    firstRouteBr: firstRoute ? brDate(parseDate(firstRoute)) : "",
+    lastRoute,
+    lastRouteBr: lastRoute ? brDate(parseDate(lastRoute)) : "",
+    lastShift: entry?.lastShift || "",
+    lastEarning,
+    lastEarningBr: lastEarning ? brDate(parseDate(lastEarning)) : "",
+    lastActivity,
+    lastActivityBr: lastActivity ? brDate(parseDate(lastActivity)) : "",
+    daysSinceRoute,
+    daysSinceActivity,
+    daysToFirstRoute,
+    status,
+    statusLabel: SIGNUP_STATUS_LABELS[status],
+  };
+}
+
+// A busca aceita varios entregadores de uma vez, separados por "|": cada termo
+// pode ser nome, CPF ou ID, e a linha entra se casar com qualquer um deles.
+function searchTerms(value) {
+  return String(value ?? "")
+    .split("|")
+    .map((term) => ({
+      text: normalizeText(term).toLowerCase().trim(),
+      digits: String(term).replace(/\D/g, ""),
+    }))
+    .filter((term) => term.text);
+}
+
+function matchesSignupSearch(row, terms) {
+  const name = normalizeText(row.name).toLowerCase();
+  return terms.some((term) => name.includes(term.text)
+    || (term.digits.length >= 3 && (row.cpf.includes(term.digits) || row.id.includes(term.digits))));
+}
+
+function filterSignups(query, rows) {
+  const start = query.start || "";
+  const end = query.end || "";
+  const terms = searchTerms(query.search);
+
+  return rows.filter((row) => {
+    if (start && row.date < start) return false;
+    if (end && row.date > end) return false;
+    if (query.praca && !row.pracas.includes(query.praca)) return false;
+    if (query.origin && row.origin !== query.origin) return false;
+    if (query.modal && row.modal !== query.modal) return false;
+    if (query.status && row.status !== query.status) return false;
+    if (!terms.length) return true;
+    return matchesSignupSearch(row, terms);
+  });
+}
+
+// Lista do campo de busca suspenso: devolve so o topo dos que casam com o que
+// foi digitado, para nao mandar os 4 mil cadastros a cada tecla.
+function signupPeople(query) {
+  const terms = searchTerms(query.q);
+  const seen = new Map();
+
+  for (const row of signupData) {
+    if (terms.length && !matchesSignupSearch(row, terms)) continue;
+    const value = row.id || row.cpf || row.name;
+    const current = seen.get(value);
+    if (current) {
+      if (row.date > current.date) current.date = row.date;
+      continue;
+    }
+    seen.set(value, { value, label: row.name, cpf: row.cpf, id: row.id, date: row.date });
+  }
+
+  return [...seen.values()]
+    .sort((a, b) => b.date.localeCompare(a.date) || a.label.localeCompare(b.label, "pt-BR"))
+    .slice(0, 60);
+}
+
+function signupGroup(rows, keyOf) {
+  const groups = [...groupBy(rows, keyOf).entries()].map(([key, groupRows]) => {
+    const activated = groupRows.filter((row) => row.orders > 0);
+    return {
+      key,
+      signups: groupRows.length,
+      share: rows.length ? groupRows.length / rows.length : 0,
+      activated: activated.length,
+      activationRate: groupRows.length ? activated.length / groupRows.length : 0,
+      active7: groupRows.filter((row) => row.status === "ativo").length,
+      neverRan: groupRows.filter((row) => row.orders === 0).length,
+      orders: sum(groupRows, "orders"),
+      ordersPerSignup: groupRows.length ? sum(groupRows, "orders") / groupRows.length : 0,
+    };
+  });
+  return groups.sort((a, b) => b.signups - a.signups || a.key.localeCompare(b.key, "pt-BR"));
+}
+
+function signupSeries(rows, bucketOf, labelOf) {
+  return [...groupBy(rows, bucketOf).entries()]
+    .map(([period, periodRows]) => {
+      // Quebra por modal no mesmo balde: o grafico de modal usa a mesma serie do
+      // grafico de cadastros, so muda o que e desenhado.
+      const modals = {};
+      for (const row of periodRows) modals[row.modal] = (modals[row.modal] || 0) + 1;
+
+      return {
+        period,
+        label: labelOf(period),
+        signups: periodRows.length,
+        activated: periodRows.filter((row) => row.orders > 0).length,
+        active7: periodRows.filter((row) => row.status === "ativo").length,
+        modals,
+      };
+    })
+    .sort((a, b) => a.period.localeCompare(b.period));
+}
+
+function buildSignups(query) {
+  const coverage = activityReference();
+  const all = signupData.map((row) => enrichSignup(row, coverage.reference, coverage.operationalStart));
+  const rows = filterSignups(query, all);
+
+  const people = new Set(rows.map((row) => row.id || row.cpf || row.name));
+  const byDay = groupBy(rows, (row) => row.date);
+  const bestDay = [...byDay.entries()].sort((a, b) => b[1].length - a[1].length)[0];
+  const activated = rows.filter((row) => row.orders > 0);
+  const timesToFirst = rows.map((row) => row.daysToFirstRoute).filter((value) => value !== null);
+
+  const statusCount = (status) => rows.filter((row) => row.status === status).length;
+
+  return {
+    total: {
+      signups: rows.length,
+      people: people.size,
+      recadastros: rows.length - people.size,
+      days: byDay.size,
+      perDay: byDay.size ? rows.length / byDay.size : 0,
+      bestDay: bestDay ? { date: bestDay[0], dateBr: brDate(parseDate(bestDay[0])), signups: bestDay[1].length } : null,
+      activated: activated.length,
+      activationRate: rows.length ? activated.length / rows.length : 0,
+      orders: sum(rows, "orders"),
+      earned: sum(rows, "earned"),
+      avgDaysToFirstRoute: timesToFirst.length ? timesToFirst.reduce((acc, value) => acc + value, 0) / timesToFirst.length : null,
+      ativo: statusCount("ativo"),
+      morno: statusCount("morno"),
+      inativo: statusCount("inativo"),
+      semRota: statusCount("semRota"),
+      semRegistro: statusCount("semRegistro"),
+      start: minIso(rows, "date"),
+      end: maxIso(rows, "date"),
+    },
+    series: {
+      daily: signupSeries(rows, (row) => row.date, (period) => `${period.slice(8, 10)}/${period.slice(5, 7)}`),
+      weekly: signupSeries(rows, (row) => row.week, (period) => `${period.slice(8, 10)}/${period.slice(5, 7)}`),
+      monthly: signupSeries(rows, (row) => row.month, (period) => `${MONTH_LABELS[Number(period.slice(5, 7)) - 1]}/${period.slice(2, 4)}`),
+    },
+    byPraca: signupGroup(rows, (row) => row.praca),
+    byOrigin: signupGroup(rows, (row) => row.origin),
+    byModal: signupGroup(rows, (row) => row.modal),
+    rows: [...rows].sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name, "pt-BR")).slice(0, 1500),
+    rowTotal: rows.length,
+    options: {
+      pracas: uniq(all.flatMap((row) => row.pracas)),
+      origins: uniq(all.map((row) => row.origin)),
+      modals: uniq(all.map((row) => row.modal)),
+      statuses: Object.entries(SIGNUP_STATUS_LABELS).map(([value, label]) => ({ value, label })),
+    },
+    range: { min: minIso(all, "date"), max: maxIso(all, "date") },
+    coverage,
+    source: { ...signupStatus, url: `https://docs.google.com/spreadsheets/d/${SIGNUP_SHEET_ID}` },
   };
 }
 
@@ -1482,6 +2045,7 @@ app.get("/api/health", (_req, res) => {
     operationalRows: data.length,
     financialRows: financeData.length,
     transferRows: transferData.length,
+    signupRows: signupData.length,
     supabase: supabase.enabled,
   });
 });
@@ -1495,6 +2059,8 @@ app.get("/api/meta", (req, res) => {
     fileCount: sourceFiles.length,
     financeRowCount: financeData.length,
     transferRowCount: transferData.length,
+    signupRowCount: signupData.length,
+    signupSource: signupStatus,
     loadedAt: loadedAt.toISOString(),
     latestSourceUpdate: latestSourceUpdate()?.toISOString() || "",
     cities: cityOrder.filter((city) => filterRowsExcept(query, "city").some((row) => row.city === city)),
@@ -1513,13 +2079,15 @@ app.get("/api/meta", (req, res) => {
   });
 });
 
-app.post("/api/reload", supabase.authorize("atualizar_bi", "atualizar_bi_financeiro"), (_req, res) => {
+app.post("/api/reload", supabase.authorize("atualizar_bi", "atualizar_bi_financeiro"), async (_req, res) => {
   reloadData();
+  await refreshSignupSheet();
   res.json({
     ok: true,
     rowCount: data.length,
     financeRowCount: financeData.length,
     transferRowCount: transferData.length,
+    signupRowCount: signupData.length,
     fileCount: sourceFiles.length,
     loadedAt: loadedAt.toISOString(),
     latestSourceUpdate: latestSourceUpdate()?.toISOString() || "",
@@ -1575,6 +2143,21 @@ app.delete("/api/bi-files", supabase.authorize("atualizar_bi", "atualizar_bi_fin
 app.get("/api/dashboard", supabase.authorize("kpis", "cadastro"), (req, res) => {
   const rows = filterRows(req.query);
   res.json(buildDashboard(rows));
+});
+
+app.get("/api/signups", supabase.authorize("cadastro", "kpis"), (req, res) => {
+  res.json(buildSignups(req.query));
+});
+
+app.get("/api/signups/people", supabase.authorize("cadastro", "kpis"), (req, res) => {
+  res.json({ people: signupPeople(req.query) });
+});
+
+// Botao "Atualizar cadastros": busca a guia do Google na hora, sem esperar o
+// refresh automatico.
+app.post("/api/signups/refresh", supabase.authorize("cadastro", "kpis"), async (req, res) => {
+  await refreshSignupSheet();
+  res.json(buildSignups(req.query));
 });
 
 app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
@@ -1799,4 +2382,12 @@ app.listen(PORT, () => {
   console.log(`Dashboard BI disponível em http://localhost:${PORT}`);
   console.log(`${data.length} linhas carregadas de ${walkXlsx(BI_DIR).length} arquivos .xlsx`);
   watchBiDir();
+
+  refreshSignupSheet().then(() => {
+    console.log(`Cadastros: ${signupData.length} linhas (${signupStatus.origin}${signupStatus.error ? ` - ${signupStatus.error}` : ""}).`);
+  });
+
+  if (SIGNUP_REFRESH_MINUTES > 0) {
+    setInterval(refreshSignupSheet, SIGNUP_REFRESH_MINUTES * 60000).unref();
+  }
 });

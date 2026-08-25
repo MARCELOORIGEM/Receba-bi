@@ -259,6 +259,116 @@
             </section>
 
             <section class="op-page" id="op-cadastro">
+              <div class="cadastro-tabs">
+                <button class="cadastro-tab active" type="button" data-cadastro-view="novos">Novos cadastros</button>
+                <button class="cadastro-tab" type="button" data-cadastro-view="base">Base de entregadores</button>
+              </div>
+
+              <section class="cadastro-view active" id="cadastro-novos">
+                <section class="signup-toolbar">
+                  <label>De<input id="signupStart" type="date" /></label>
+                  <label>Até<input id="signupEnd" type="date" /></label>
+                  <label>Praça<select id="signupPraca"></select></label>
+                  <label>Origem<select id="signupOrigin"></select></label>
+                  <label>Modal<select id="signupModal"></select></label>
+                  <label>Situação<select id="signupStatus"></select></label>
+                  <label class="signup-people-field">Entregador
+                    <div class="multi-select" id="signupPeople">
+                      <button class="multi-select-trigger" type="button" data-role="trigger">
+                        <span data-role="label">Todos</span>
+                        <i></i>
+                      </button>
+                      <div class="multi-select-panel">
+                        <div class="search-box">
+                          <span></span>
+                          <input type="text" data-role="input" placeholder="Digite nome, CPF ou ID" autocomplete="off" />
+                        </div>
+                        <div class="multi-select-chips" data-role="chips"></div>
+                        <div class="multi-select-options" data-role="options"></div>
+                      </div>
+                    </div>
+                  </label>
+                  <div class="signup-toolbar-actions">
+                    <button id="signupClear" class="signup-ghost hidden" type="button">Limpar filtros</button>
+                    <button id="signupSync" class="signup-ghost" type="button">Atualizar planilha</button>
+                    <button id="signupExport" class="audit-export" type="button">Exportar CSV</button>
+                  </div>
+                </section>
+
+                <p class="signup-source" id="signupSource"></p>
+
+                <section class="finance-kpis signup-kpis" id="signupKpis"></section>
+
+                <section class="panel page-panel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Cadastros por período</h2>
+                      <span id="signupChartInfo">Barra = cadastros no período. Linha = quantos já rodaram pelo menos uma corrida.</span>
+                    </div>
+                    <div class="chart-period-toggle" id="signupPeriodToggle">
+                      <button type="button" class="chart-period-btn" data-signup-period="daily">Diário</button>
+                      <button type="button" class="chart-period-btn" data-signup-period="weekly">Semanal</button>
+                      <button type="button" class="chart-period-btn active" data-signup-period="monthly">Mensal</button>
+                    </div>
+                  </div>
+                  <div class="signup-chart-wrap"><canvas id="signupChart" width="1180" height="260"></canvas></div>
+                </section>
+
+                <section class="panel page-panel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Cadastros por modal</h2>
+                      <span>Moto e bike no mesmo período escolhido acima</span>
+                    </div>
+                    <div class="signup-modal-chips" id="signupModalChips"></div>
+                  </div>
+                  <div class="signup-chart-wrap"><canvas id="signupModalChart" width="1180" height="240"></canvas></div>
+                </section>
+
+                <div class="signup-split">
+                  <section class="panel page-panel">
+                    <div class="panel-head">
+                      <div>
+                        <h2>De onde vem (praça)</h2>
+                        <span>Cadastros, ativação e corridas por praça</span>
+                      </div>
+                    </div>
+                    <div class="table-wrap"><table id="signupPracaTable"></table></div>
+                  </section>
+
+                  <section class="panel page-panel">
+                    <div class="panel-head">
+                      <div>
+                        <h2>De onde vem (origem)</h2>
+                        <span>Captação, Telegram, retorno e indicações</span>
+                      </div>
+                    </div>
+                    <div class="table-wrap"><table id="signupOriginTable"></table></div>
+                  </section>
+                </div>
+
+                <section class="panel page-panel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Situação de quem foi cadastrado</h2>
+                      <span id="signupStatusInfo"></span>
+                    </div>
+                  </div>
+                  <div class="signup-status-grid" id="signupStatusCards"></div>
+                </section>
+
+                <section class="panel page-panel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Cadastros e última data que rodou</h2>
+                      <span id="signupTableInfo"></span>
+                    </div>
+                  </div>
+                  <div class="table-wrap tall"><table id="signupTable"></table></div>
+                </section>
+              </section>
+
+              <section class="cadastro-view" id="cadastro-base">
               <section class="panel page-panel">
                 <div class="panel-head">
                   <div>
@@ -286,6 +396,7 @@
                   <span id="driverInfo"></span>
                 </div>
                 <div class="table-wrap tall"><table id="driverTable"></table></div>
+              </section>
               </section>
             </section>
 
@@ -577,6 +688,22 @@
                 <label class="upload-dropzone" data-role="dropzone">
                   <input type="file" accept=".xlsx" multiple hidden data-role="input" />
                   <span>Arraste o .xlsx ou clique</span>
+                </label>
+                <ul class="upload-log" data-role="log"></ul>
+                <div class="upload-files">
+                  <div class="upload-files-head"><span>Arquivos importados</span><small data-role="files-count"></small></div>
+                  <ul class="upload-files-list" data-role="files-list"></ul>
+                </div>
+              </article>
+            </section>
+
+            <h3 class="upload-section-title">Cadastros <small>reserva da planilha do Google</small></h3>
+            <section class="upload-grid upload-grid-single">
+              <article class="upload-card" data-target="CADASTROS">
+                <header><h3>Cadastros</h3><span class="upload-status" data-role="status">Pronto</span></header>
+                <label class="upload-dropzone" data-role="dropzone">
+                  <input type="file" accept=".xlsx" multiple hidden data-role="input" />
+                  <span>Arraste o .xlsx da guia CADASTROS ou clique</span>
                 </label>
                 <ul class="upload-log" data-role="log"></ul>
                 <div class="upload-files">
