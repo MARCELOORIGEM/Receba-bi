@@ -187,6 +187,10 @@
         </div>
       </aside>
 
+      <button class="sidebar-toggle" id="sidebarToggle" type="button" title="Recolher menu" aria-label="Recolher menu">
+        <i></i>
+      </button>
+
       <section class="workspace">
         <header class="page-header">
           <div>
@@ -260,14 +264,77 @@
 
             <section class="op-page" id="op-cadastro">
               <div class="cadastro-tabs">
-                <button class="cadastro-tab active" type="button" data-cadastro-view="novos">Novos cadastros</button>
+                <button class="cadastro-tab active" type="button" data-cadastro-view="planilha">Planilha de cadastros</button>
+                <button class="cadastro-tab" type="button" data-cadastro-view="novos">Indicadores de cadastro</button>
                 <button class="cadastro-tab" type="button" data-cadastro-view="base">Base de entregadores</button>
               </div>
 
-              <section class="cadastro-view active" id="cadastro-novos">
+              <!-- A planilha de cadastros mora aqui dentro: cada célula é
+                   editável e grava na base do sistema ao sair do campo. -->
+              <section class="cadastro-view active" id="cadastro-planilha">
+                <section class="sheet-toolbar">
+                  <label>Buscar<input id="sheetSearch" type="text" placeholder="Nome, CPF ou ID" autocomplete="off" /></label>
+                  <label>Cidade<select id="sheetCity"></select></label>
+                  <label>Mês<select id="sheetMonth"></select></label>
+                  <label>Situação<select id="sheetActive">
+                    <option value="">Todas</option>
+                    <option value="ativo">Ativos</option>
+                    <option value="inativo">Inativos</option>
+                  </select></label>
+                  <div class="sheet-toolbar-actions">
+                    <button id="sheetFullscreen" class="signup-ghost" type="button">Tela cheia</button>
+                    <button id="sheetPasteToggle" class="signup-ghost" type="button">Colar da planilha</button>
+                    <button id="sheetExport" class="signup-ghost" type="button">Exportar CSV</button>
+                    <button id="sheetAdd" class="audit-export" type="button">Nova linha</button>
+                  </div>
+                </section>
+
+                <p class="signup-source" id="sheetInfo"></p>
+
+                <section class="panel page-panel sheet-paste hidden" id="sheetPastePanel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Colar da planilha</h2>
+                      <span>Selecione as linhas no Google Sheets, copie e cole aqui. Quem já está na base no mesmo dia é ignorado.</span>
+                    </div>
+                  </div>
+                  <textarea id="sheetPasteText" rows="7" placeholder="DATA&#9;ID&#9;ENTREGADOR&#9;CPF&#9;CONTATO&#9;MODAL&#9;PRAÇA&#9;ORIGEM&#9;CIDADE&#9;SITUAÇÃO"></textarea>
+                  <div class="sheet-paste-actions">
+                    <label>Cidade das linhas sem cidade<select id="sheetPasteCity"></select></label>
+                    <span class="signup-form-message" id="sheetPasteMessage"></span>
+                    <button id="sheetPasteCancel" class="signup-ghost" type="button">Fechar</button>
+                    <button id="sheetPasteImport" class="audit-export" type="button">Importar linhas</button>
+                  </div>
+                </section>
+
+                <section class="panel page-panel">
+                  <div class="panel-head">
+                    <div>
+                      <h2>Cadastros</h2>
+                      <span id="sheetHint">Clique na célula, digite e saia do campo: grava sozinho.</span>
+                      <span class="sheet-tip">Arraste a borda do cabeçalho para ajustar a largura da coluna.</span>
+                    </div>
+                    <span class="signup-form-message" id="sheetMessage"></span>
+                  </div>
+                  <div class="sheet-grid" id="sheetGrid">
+                    <!-- Barra de rolagem horizontal repetida em cima: com 4 mil
+                         linhas, a de baixo fica longe demais para ser usada. -->
+                    <div class="sheet-scroll-top" id="sheetScrollTop"><div></div></div>
+                    <div class="table-wrap sheet-wrap" id="sheetWrap"><table id="sheetTable" class="sheet-table"></table></div>
+                    <button class="sheet-nav prev hidden" type="button" data-sheet-nav="-1" aria-label="Colunas à esquerda"></button>
+                    <button class="sheet-nav next hidden" type="button" data-sheet-nav="1" aria-label="Colunas à direita"></button>
+                  </div>
+                  <datalist id="sheetPracaList"></datalist>
+                  <datalist id="sheetOriginList"></datalist>
+                  <datalist id="sheetModalList"></datalist>
+                </section>
+              </section>
+
+              <section class="cadastro-view" id="cadastro-novos">
                 <section class="signup-toolbar">
                   <label>De<input id="signupStart" type="date" /></label>
                   <label>Até<input id="signupEnd" type="date" /></label>
+                  <label>Cidade<select id="signupCity"></select></label>
                   <label>Praça<select id="signupPraca"></select></label>
                   <label>Origem<select id="signupOrigin"></select></label>
                   <label>Modal<select id="signupModal"></select></label>
@@ -290,7 +357,6 @@
                   </label>
                   <div class="signup-toolbar-actions">
                     <button id="signupClear" class="signup-ghost hidden" type="button">Limpar filtros</button>
-                    <button id="signupSync" class="signup-ghost" type="button">Atualizar planilha</button>
                     <button id="signupExport" class="audit-export" type="button">Exportar CSV</button>
                   </div>
                 </section>
@@ -401,6 +467,23 @@
             </section>
 
             <section class="op-page" id="op-resultado">
+              <section class="sheet-toolbar daily-toolbar">
+                <label>Ordenar por<select id="dailySort"></select></label>
+                <label>Mínimo de corridas<input id="dailyMinOrders" type="number" min="0" step="1" value="10" /></label>
+                <label>Quantidade no ranking<select id="dailyTop">
+                  <option value="10" selected>Top 10</option>
+                  <option value="20">Top 20</option>
+                  <option value="50">Top 50</option>
+                  <option value="100">Top 100</option>
+                  <option value="250">Top 250</option>
+                  <option value="0">Todos</option>
+                </select></label>
+                <div class="sheet-toolbar-actions">
+                  <button id="dailyExport" class="audit-export" type="button">Baixar Excel</button>
+                </div>
+              </section>
+
+              <p class="signup-source" id="dailyResultInfo"></p>
               <div id="dailyResultCities"></div>
             </section>
 

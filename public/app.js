@@ -3,13 +3,25 @@ const DEFAULT_PASSWORD = "RECEBA99";
 const state = {
   view: "operacional",
   opPage: "kpis",
-  cadastroView: "novos",
+  cadastroView: "planilha",
   chartMetrics: new Set(["orders", "tsh", "critical"]),
   trendPeriod: "daily",
   signupPeriod: "monthly",
   signups: null,
   signupPeople: [],
-  signupFilter: { start: "", end: "", praca: "", origin: "", modal: "", status: "", search: "" },
+  signupFilter: { start: "", end: "", city: "", praca: "", origin: "", modal: "", status: "", search: "" },
+  // A planilha de cadastros e carregada so quando a aba abre: sao milhares de
+  // linhas e a maior parte das visitas ao sistema nem passa por ela.
+  sheet: null,
+  sheetFilter: { q: "", city: "", month: "", active: "" },
+  // Largura escolhida a mao por coluna, altura medida de uma linha desenhada e
+  // o pedaco da lista que esta na tela agora.
+  sheetWidths: {},
+  sheetRowHeight: 36,
+  sheetWindow: { start: -1, end: -1, rows: -1 },
+  // Ranking dos melhores entregadores: criterio, piso de corridas e quantos
+  // entram na lista (e no Excel).
+  dailyFilter: { sort: "score", minOrders: "10", top: "10" },
   meta: null,
   dashboard: null,
   finance: null,
@@ -86,6 +98,14 @@ function changePill(change, baseLabel = "base") {
 function pctClass(value) {
   if (value >= 0.9) return "good";
   if (value >= 0.75) return "warn";
+  return "bad";
+}
+
+// CAA e OT sao taxa de erro: 0% e o melhor resultado possivel, entao a escala
+// de cor e ao contrario da usada em TSH e AR.
+function errorPctClass(value) {
+  if (value <= 0.02) return "good";
+  if (value <= 0.05) return "warn";
   return "bad";
 }
 
@@ -301,6 +321,33 @@ function applyUserAccess() {
 }
 
 const LAST_VIEW_KEY = "receba:lastView";
+const SIDEBAR_KEY = "receba:sidebarCollapsed";
+
+// Quem trabalha na planilha o dia todo recolhe o menu uma vez e nao quer
+// recolher de novo a cada login.
+function setSidebarCollapsed(collapsed) {
+  document.body.classList.toggle("sidebar-collapsed", collapsed);
+  const label = collapsed ? "Abrir menu" : "Recolher menu";
+  $("sidebarToggle").title = label;
+  $("sidebarToggle").setAttribute("aria-label", label);
+  // A largura muda com a animacao do menu, entao a conta espera ela terminar.
+  setTimeout(() => {
+    if (state.sheet) syncSheetScrollbars();
+  }, 240);
+  try {
+    localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "");
+  } catch {
+    // Navegador sem localStorage: o menu apenas volta aberto na proxima visita.
+  }
+}
+
+function restoreSidebar() {
+  try {
+    if (localStorage.getItem(SIDEBAR_KEY)) setSidebarCollapsed(true);
+  } catch {
+    // idem
+  }
+}
 
 // Guarda a tela aberta para o F5 voltar exatamente onde a pessoa estava, em vez
 // de jogar todo mundo de volta nos KPIs.
@@ -665,7 +712,7 @@ async function refresh() {
     canLoadOperational ? dataJson(`/api/dashboard?${params}`) : Promise.resolve(null),
     canLoadFinance ? dataJson(`/api/finance?${financeParams}`) : Promise.resolve(null),
     canLoadAudit ? dataJson(`/api/transfer-audit?${auditQueryParams()}`) : Promise.resolve(null),
-    canLoadOperational ? dataJson(`/api/daily-result?${params}`) : Promise.resolve(null),
+    canLoadOperational ? dataJson(`/api/daily-result?${dailyQueryParams()}`) : Promise.resolve(null),
     canLoadOperational ? dataJson(`/api/signups?${signupQueryParams()}`) : Promise.resolve(null),
   ]);
   state.dashboard = dashboard;
@@ -829,6 +876,7 @@ function readSignupFilterInputs() {
   state.signupFilter = {
     start: $("signupStart").value,
     end: $("signupEnd").value,
+    city: $("signupCity").value,
     praca: $("signupPraca").value,
     origin: $("signupOrigin").value,
     modal: $("signupModal").value,
@@ -997,14 +1045,16 @@ function fillSignupSelect(id, values, allLabel) {
 
 function renderSignupSource() {
   const { source, coverage, total } = state.signups;
-  const origin = source.error
-    ? `<b>planilha indisponível</b> (${escapeHtml(source.error)}) - mostrando a última cópia salva`
-    : `<b>${escapeHtml(source.origin)}</b>, guia <b>${escapeHtml(source.tab)}</b>${source.fetchedAt ? ` lida em ${fmtDateTime(source.fetchedAt)}` : ""}`;
+  const extra = source.fileRows
+    ? ` mais <b>${fmtInt(source.fileRows)}</b> linhas de planilhas enviadas em Upload BI`
+    : "";
+  const origin = `<b>base do sistema</b> (${escapeHtml(source.file)}) com <b>${fmtInt(source.storeRows)}</b> cadastros${extra}`
+    + (source.updatedAt ? `, última alteração em ${fmtDateTime(source.updatedAt)}` : "");
   const cobertura = coverage.operationalStart
     ? `Relatórios operacionais carregados: <b>${brDate(coverage.operationalStart)} a ${brDate(coverage.operationalEnd)}</b>. "Última data que rodou" e "dias sem rodar" usam <b>${brDate(coverage.reference)}</b> como referência; cadastro sem turno nesse intervalo aparece como <b>sem registro</b>.`
     : "Nenhum relatório operacional carregado: sem ele não dá para saber quem rodou.";
 
-  $("signupSource").className = `signup-source${source.error ? " error" : ""}`;
+  $("signupSource").className = "signup-source";
   $("signupSource").innerHTML = `Fonte dos cadastros: ${origin} - ${fmtInt(total.signups)} linhas no filtro atual.<br />${cobertura}`;
 }
 
@@ -1304,6 +1354,7 @@ function renderSignupTable() {
   const body = sortedRows(rows, "signupRows").map((row) => `
     <tr>
       <td>${row.dateBr}</td>
+      <td>${escapeHtml(row.city)}</td>
       <td>${escapeHtml(row.id || "-")}</td>
       <td>${escapeHtml(row.name)}</td>
       <td>${escapeHtml(row.cpf || "-")}</td>
@@ -1320,6 +1371,7 @@ function renderSignupTable() {
   $("signupTable").innerHTML = `
     <thead><tr>
       ${sortHeader("signupRows", "date", "CADASTRO")}
+      ${sortHeader("signupRows", "city", "CIDADE")}
       ${sortHeader("signupRows", "id", "ID")}
       ${sortHeader("signupRows", "name", "ENTREGADOR")}
       ${sortHeader("signupRows", "cpf", "CPF")}
@@ -1332,7 +1384,7 @@ function renderSignupTable() {
       ${sortHeader("signupRows", "shiftDays", "ESCALADO")}
       ${sortHeader("signupRows", "status", "SITUAÇÃO")}
     </tr></thead>
-    <tbody>${body || `<tr><td colspan="12">Nenhum cadastro com esse filtro.</td></tr>`}</tbody>`;
+    <tbody>${body || `<tr><td colspan="13">Nenhum cadastro com esse filtro.</td></tr>`}</tbody>`;
 }
 
 // "Limpar" so faz sentido quando existe algo para limpar: com o periodo cheio e
@@ -1348,8 +1400,497 @@ function renderSignupClearButton() {
   $("signupClear").classList.toggle("hidden", !hasActiveSignupFilter());
 }
 
+// Quem tem a permissao "cadastro" edita a planilha; o resto so le.
+function canEditSignups() {
+  if (state.authMode === "local") return true;
+  return state.user?.role === "admin"
+    || Boolean(state.user?.permissions?.cadastro)
+    || normalizeEmail(state.user?.email) === FULL_ACCESS_EMAIL;
+}
+
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function datalistOptions(values) {
+  return (values || []).map((value) => `<option value="${escapeHtml(value)}"></option>`).join("");
+}
+
+// ── Planilha de cadastros ────────────────────────────────────────────────────
+// A planilha que ficava no Google mora aqui. Cada celula e um campo: digitou e
+// saiu do campo, gravou na base. Nao existe botao "salvar tudo" de proposito -
+// quem lanca cadastro lanca uma linha por vez e quer ver salvo na hora.
+//
+// A base nao tem teto de linhas. O que a tela desenha e so a janela visivel
+// (umas 30 linhas) mais uma folga em cima e embaixo; o resto do espaco vira
+// altura vazia. Com isso 4 mil ou 40 mil cadastros custam o mesmo para o
+// navegador, porque o numero de campos na tela nao muda.
+
+// Larguras apertadas de proposito: somadas dao ~1.240px, entao a planilha cabe
+// inteira na tela sem rolar para o lado na maioria dos monitores. Quem precisar
+// de mais espaco numa coluna arrasta a borda do cabecalho.
+const SHEET_COLUMNS = [
+  { field: "date", label: "DATA", type: "date", width: 100 },
+  { field: "city", label: "CIDADE", type: "city", width: 110 },
+  { field: "id", label: "ID", type: "text", width: 118, numeric: true },
+  { field: "name", label: "ENTREGADOR", type: "text", width: 240 },
+  { field: "cpf", label: "CPF", type: "text", width: 96, numeric: true },
+  { field: "contact", label: "CONTATO", type: "tel", width: 112 },
+  { field: "modal", label: "MODAL", type: "text", width: 106, list: "sheetModalList" },
+  { field: "praca", label: "PRAÇA", type: "text", width: 110, list: "sheetPracaList" },
+  { field: "origin", label: "ORIGEM", type: "text", width: 110, list: "sheetOriginList" },
+  { field: "active", label: "SITUAÇÃO", type: "active", width: 88 },
+];
+
+const SHEET_ACTIONS_WIDTH = 34;
+const SHEET_NAV_STEP = 260;
+const SHEET_WIDTHS_KEY = "receba:sheetColWidths";
+const SHEET_BUFFER = 10;
+
+function sheetQueryParams(extra = {}) {
+  const params = new URLSearchParams({ view: "sheet" });
+  Object.entries({ ...state.sheetFilter, ...extra }).forEach(([key, value]) => {
+    if (value) params.set(key, value);
+  });
+  return params.toString();
+}
+
+function readSheetFilterInputs() {
+  state.sheetFilter = {
+    q: $("sheetSearch").value,
+    city: $("sheetCity").value,
+    month: $("sheetMonth").value,
+    active: $("sheetActive").value,
+  };
+}
+
+async function loadSignupSheet() {
+  state.sheet = await dataJson(`/api/signups/sheet?${sheetQueryParams()}`);
+  renderSignupSheet();
+}
+
+function setSheetMessage(text, ok = false) {
+  $("sheetMessage").textContent = text;
+  $("sheetMessage").classList.toggle("ok", ok);
+}
+
+function monthLabel(month) {
+  const [year, number] = month.split("-");
+  return `${MONTH_SHORT[Number(number) - 1]}/${year}`;
+}
+
+function fillSignupFormOptions() {
+  const options = state.sheet?.options || {};
+  $("sheetPracaList").innerHTML = datalistOptions(options.pracaChoices);
+  $("sheetOriginList").innerHTML = datalistOptions(options.originChoices);
+  $("sheetModalList").innerHTML = datalistOptions(options.modalChoices);
+}
+
+// ── Largura das colunas ──────────────────────────────────────────────────────
+// Cada um lida com uma coluna diferente: quem cobra contato quer CONTATO largo,
+// quem confere praca quer PRAÇA. A largura escolhida fica no navegador.
+
+function readSheetWidths() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SHEET_WIDTHS_KEY) || "null");
+    if (saved && typeof saved === "object") return saved;
+  } catch {
+    // Navegador sem localStorage: vale a largura padrao.
+  }
+  return {};
+}
+
+function saveSheetWidths() {
+  try {
+    localStorage.setItem(SHEET_WIDTHS_KEY, JSON.stringify(state.sheetWidths));
+  } catch {
+    // idem
+  }
+}
+
+function sheetWidth(column) {
+  return Math.round(state.sheetWidths[column.field] || column.width);
+}
+
+// ── Rolagem lateral ──────────────────────────────────────────────────────────
+// Quando a planilha nao cabe na tela, o unico jeito de chegar em SITUAÇÃO era a
+// barra la embaixo, depois de 4 mil linhas. Agora existe uma barra em cima e
+// duas setas nas beiradas, e as tres andam junto com a grade.
+
+// As duas barras andam juntas. Sem o guarda uma empurra a outra de volta a cada
+// evento e a rolagem trava no lugar (a seta andava 3px em vez de 260).
+let sheetSyncing = false;
+
+function mirrorSheetScroll(from, to) {
+  if (sheetSyncing || to.scrollLeft === from.scrollLeft) return;
+  sheetSyncing = true;
+  to.scrollLeft = from.scrollLeft;
+  sheetSyncing = false;
+}
+
+function syncSheetScrollbars() {
+  const wrap = $("sheetWrap");
+  const topBar = $("sheetScrollTop");
+  const sobra = wrap.scrollWidth - wrap.clientWidth;
+
+  topBar.firstElementChild.style.width = `${wrap.scrollWidth}px`;
+  topBar.classList.toggle("hidden", sobra <= 1);
+  mirrorSheetScroll(wrap, topBar);
+
+  // Seta so aparece quando existe coluna escondida daquele lado.
+  document.querySelector(".sheet-nav.prev").classList.toggle("hidden", wrap.scrollLeft <= 1);
+  document.querySelector(".sheet-nav.next").classList.toggle("hidden", wrap.scrollLeft >= sobra - 1);
+}
+
+// Salto direto, sem animacao: a animacao dura varios quadros e cada quadro
+// dispara o espelhamento, o que fazia a rolagem se atropelar no meio do caminho.
+function scrollSheetSideways(direction) {
+  const wrap = $("sheetWrap");
+  const sobra = wrap.scrollWidth - wrap.clientWidth;
+  wrap.scrollLeft = Math.min(sobra, Math.max(0, wrap.scrollLeft + direction * SHEET_NAV_STEP));
+  syncSheetScrollbars();
+}
+
+function sheetTotalWidth() {
+  return SHEET_COLUMNS.reduce((total, column) => total + sheetWidth(column), SHEET_ACTIONS_WIDTH);
+}
+
+function applySheetTotalWidth() {
+  $("sheetTable").style.width = `${sheetTotalWidth()}px`;
+}
+
+function renderSheetColgroup() {
+  const cols = SHEET_COLUMNS.map((column) => `<col style="width:${sheetWidth(column)}px" data-col="${column.field}" />`);
+  return `<colgroup>${cols.join("")}<col style="width:${SHEET_ACTIONS_WIDTH}px" /></colgroup>`;
+}
+
+function applySheetWidth(field, width) {
+  const col = $("sheetTable").querySelector(`col[data-col="${field}"]`);
+  if (col) col.style.width = `${Math.round(width)}px`;
+  applySheetTotalWidth();
+}
+
+function startSheetResize(event) {
+  const handle = event.target.closest("[data-resize]");
+  if (!handle) return;
+  event.preventDefault();
+
+  const field = handle.dataset.resize;
+  const column = SHEET_COLUMNS.find((item) => item.field === field);
+  const startX = event.clientX;
+  const startWidth = sheetWidth(column);
+  document.body.classList.add("sheet-resizing");
+
+  const move = (moveEvent) => {
+    // Abaixo de 70px a celula deixa de mostrar qualquer conteudo util.
+    const width = Math.max(70, startWidth + (moveEvent.clientX - startX));
+    state.sheetWidths[field] = width;
+    applySheetWidth(field, width);
+  };
+
+  const stop = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", stop);
+    document.body.classList.remove("sheet-resizing");
+    saveSheetWidths();
+    syncSheetScrollbars();
+  };
+
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mouseup", stop);
+}
+
+// ── Desenho da grade ─────────────────────────────────────────────────────────
+
+function sheetCellInput(row, column, canEdit) {
+  const value = escapeHtml(row[column.field] ?? "");
+  const disabled = canEdit ? "" : " disabled";
+
+  if (column.type === "city") {
+    const cities = state.sheet.options.cityChoices || [];
+    const options = cities.map((city) => `<option value="${escapeHtml(city)}"${city === row.city ? " selected" : ""}>${escapeHtml(city)}</option>`);
+    return `<select class="sheet-input" data-field="city"${disabled}>${options.join("")}</select>`;
+  }
+
+  if (column.type === "active") {
+    return `<select class="sheet-input sheet-status" data-field="active"${disabled}>
+        <option value="1"${row.active ? " selected" : ""}>ATIVO</option>
+        <option value="0"${row.active ? "" : " selected"}>INATIVO</option>
+      </select>`;
+  }
+
+  const list = column.list ? ` list="${column.list}"` : "";
+  const mode = column.numeric ? ' inputmode="numeric"' : column.type === "tel" ? ' inputmode="tel"' : "";
+  const type = column.type === "tel" ? "text" : column.type;
+  return `<input class="sheet-input" type="${type}" data-field="${column.field}" value="${value}"${list}${mode}${disabled} />`;
+}
+
+function sheetRowHtml(row, index, canEdit) {
+  const cells = SHEET_COLUMNS.map((column) => `<td>${sheetCellInput(row, column, canEdit)}</td>`).join("");
+  const action = canEdit
+    ? `<button type="button" class="sheet-delete" data-sheet-delete="${escapeHtml(row.key)}" title="Apagar linha">×</button>`
+    : "";
+
+  return `<tr data-key="${escapeHtml(row.key)}" class="${index % 2 ? "odd" : "even"}${row.active ? "" : " inativo"}">
+      ${cells}
+      <td class="sheet-actions">${action}</td>
+    </tr>`;
+}
+
+// A linha em branco fica no cabecalho, nao no corpo: e por ela que entra
+// cadastro novo, e ali ela nao sai da tela quando a rolagem desce.
+function emptySheetRow() {
+  return {
+    key: "",
+    date: todayIso(),
+    city: state.sheetFilter.city || "SAO PAULO",
+    id: "",
+    name: "",
+    cpf: "",
+    contact: "",
+    modal: "",
+    praca: "",
+    origin: "",
+    active: true,
+  };
+}
+
+function sheetHeadHtml(canEdit) {
+  const heads = SHEET_COLUMNS.map((column) => `<th>
+      <span>${column.label}</span>
+      <i class="sheet-resizer" data-resize="${column.field}"></i>
+    </th>`).join("");
+
+  const newRow = canEdit
+    ? `<tr class="sheet-row-new">
+        ${SHEET_COLUMNS.map((column) => `<td>${sheetCellInput(emptySheetRow(), column, true)}</td>`).join("")}
+        <td class="sheet-actions"><span class="sheet-new-mark">nova</span></td>
+      </tr>`
+    : "";
+
+  return `<thead><tr class="sheet-head">${heads}<th></th></tr>${newRow}</thead>`;
+}
+
+// So as linhas que cabem na tela viram HTML. O que esta acima e abaixo da
+// janela vira uma linha vazia com a altura equivalente, entao a barra de
+// rolagem continua do tamanho certo para a base inteira.
+function renderSheetWindow() {
+  if (!state.sheet) return;
+  const wrap = $("sheetWrap");
+  const body = $("sheetTable").querySelector("tbody");
+  if (!body) return;
+
+  // Redesenhar por baixo de quem esta digitando apagaria o que foi digitado.
+  if (body.contains(document.activeElement)) return;
+
+  const rows = state.sheet.rows;
+  const height = state.sheetRowHeight;
+  const canEdit = canEditSignups();
+  const columns = SHEET_COLUMNS.length + 1;
+
+  const visible = Math.ceil((wrap.clientHeight || 600) / height);
+  const start = Math.max(0, Math.floor(wrap.scrollTop / height) - SHEET_BUFFER);
+  const end = Math.min(rows.length, start + visible + SHEET_BUFFER * 2);
+
+  if (state.sheetWindow.start === start && state.sheetWindow.end === end && state.sheetWindow.rows === rows.length) return;
+  state.sheetWindow = { start, end, rows: rows.length };
+
+  const spacer = (space) => (space > 0 ? `<tr class="sheet-spacer" style="height:${space}px"><td colspan="${columns}"></td></tr>` : "");
+  const drawn = rows.slice(start, end).map((row, offset) => sheetRowHtml(row, start + offset, canEdit)).join("");
+
+  body.innerHTML = rows.length
+    ? spacer(start * height) + drawn + spacer((rows.length - end) * height)
+    : `<tr><td colspan="${columns}" class="signup-empty">Nenhum cadastro com esse filtro.</td></tr>`;
+
+  measureSheetRow();
+}
+
+// A altura da linha muda com o zoom do navegador e com a fonte do sistema. Em
+// vez de cravar um numero, mede a linha desenhada e refaz a conta se errou.
+function measureSheetRow() {
+  const drawn = $("sheetTable").querySelector("tbody tr:not(.sheet-spacer)");
+  if (!drawn) return;
+  const height = drawn.getBoundingClientRect().height;
+  if (!height || Math.abs(height - state.sheetRowHeight) < 0.5) return;
+  state.sheetRowHeight = height;
+  state.sheetWindow = { start: -1, end: -1, rows: -1 };
+  renderSheetWindow();
+}
+
+function renderSignupSheet() {
+  if (!state.sheet) return;
+  const sheet = state.sheet;
+  const canEdit = canEditSignups();
+
+  fillSignupSelect("sheetCity", sheet.options.cities, "Todas");
+  fillSignupSelect("sheetMonth", sheet.options.months.map((month) => ({ value: month, label: monthLabel(month) })), "Todos");
+  fillSignupFormOptions();
+  fillSignupSelect("sheetPasteCity", sheet.options.cityChoices, "SAO PAULO");
+
+  const filtrado = sheet.filtered === sheet.total
+    ? `<b>${fmtInt(sheet.total)}</b> cadastros`
+    : `<b>${fmtInt(sheet.filtered)}</b> de ${fmtInt(sheet.total)} cadastros no filtro`;
+
+  $("sheetInfo").innerHTML = `Planilha guardada no sistema (<b>${escapeHtml(sheet.file)}</b>) com ${filtrado}`
+    + ` - <b>${fmtInt(sheet.ativos)}</b> ativos e <b>${fmtInt(sheet.inativos)}</b> inativos`
+    + (sheet.updatedAt ? `. Última alteração em ${fmtDateTime(sheet.updatedAt)}.` : ".");
+
+  $("sheetTable").innerHTML = `${renderSheetColgroup()}${sheetHeadHtml(canEdit)}<tbody></tbody>`;
+  applySheetTotalWidth();
+  $("sheetWrap").scrollTop = 0;
+  state.sheetWindow = { start: -1, end: -1, rows: -1 };
+  renderSheetWindow();
+  syncSheetScrollbars();
+
+  $("sheetAdd").classList.toggle("hidden", !canEdit);
+  $("sheetPasteToggle").classList.toggle("hidden", !canEdit);
+  $("sheetHint").textContent = canEdit
+    ? "Clique na célula, digite e saia do campo: grava sozinho."
+    : "Somente leitura: seu usuário não tem a permissão de cadastro.";
+}
+
+function sheetRowPayload(tr) {
+  const payload = {};
+  tr.querySelectorAll("[data-field]").forEach((field) => { payload[field.dataset.field] = field.value; });
+  payload.pracas = payload.praca;
+  return payload;
+}
+
+function flashSheetRow(tr, ok) {
+  tr.classList.remove("saved", "failed");
+  // Sem o reflow o navegador reaproveita a animacao anterior e nada pisca.
+  void tr.offsetWidth;
+  tr.classList.add(ok ? "saved" : "failed");
+}
+
+// Gravar uma celula nao redesenha a grade: quem esta digitando perderia o lugar
+// no meio da linha. A grade so e refeita quando a lista muda de tamanho (linha
+// nova, linha apagada, importacao).
+async function saveSheetRow(tr) {
+  const key = tr.dataset.key;
+  const payload = sheetRowPayload(tr);
+
+  if (!key && (!payload.date || !payload.name.trim())) return;
+
+  try {
+    const response = await dataJson(
+      key ? `/api/signups/${encodeURIComponent(key)}?${sheetQueryParams()}` : `/api/signups?${sheetQueryParams()}`,
+      { method: key ? "PUT" : "POST", body: JSON.stringify(payload) },
+    );
+
+    state.sheet = response;
+    setSheetMessage(key ? "Linha salva." : "Cadastro incluído.", true);
+
+    if (!key) {
+      renderSignupSheet();
+      return;
+    }
+
+    // O servidor formata telefone e limpa CPF: a celula tem que mostrar o que
+    // ficou gravado, nao o que foi digitado.
+    const saved = response.rows.find((row) => row.key === key);
+    if (saved) {
+      tr.querySelectorAll("[data-field]").forEach((field) => {
+        const name = field.dataset.field;
+        if (name === "active") field.value = saved.active ? "1" : "0";
+        else if (field !== document.activeElement) field.value = saved[name] ?? "";
+      });
+      tr.classList.toggle("inativo", !saved.active);
+    }
+    flashSheetRow(tr, true);
+  } catch (error) {
+    flashSheetRow(tr, false);
+    setSheetMessage(error.message || "Não foi possível salvar a linha.");
+  }
+}
+
+async function deleteSheetRow(key) {
+  if (!window.confirm("Apagar esta linha da planilha?")) return;
+  try {
+    state.sheet = await dataJson(`/api/signups/${encodeURIComponent(key)}?${sheetQueryParams()}`, { method: "DELETE" });
+    renderSignupSheet();
+    setSheetMessage("Linha apagada.", true);
+  } catch (error) {
+    setSheetMessage(error.message || "Não foi possível apagar a linha.");
+  }
+}
+
+async function importPastedSheet() {
+  const text = $("sheetPasteText").value;
+  const button = $("sheetPasteImport");
+  button.disabled = true;
+  $("sheetPasteMessage").textContent = "Importando...";
+
+  try {
+    const result = await dataJson(`/api/signups/paste?${sheetQueryParams()}`, {
+      method: "POST",
+      body: JSON.stringify({ text, city: $("sheetPasteCity").value }),
+    });
+    state.sheet = result.sheet;
+    renderSignupSheet();
+    $("sheetPasteText").value = "";
+    $("sheetPasteMessage").textContent = `${fmtInt(result.created)} incluídos, ${fmtInt(result.repeated)} já estavam na base`
+      + (result.ignored ? `, ${fmtInt(result.ignored)} sem data ou sem identificação` : "") + ".";
+    $("sheetPasteMessage").classList.add("ok");
+  } catch (error) {
+    $("sheetPasteMessage").classList.remove("ok");
+    $("sheetPasteMessage").textContent = error.message || "Não foi possível importar.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// Tela cheia junta as duas coisas: esconde o resto do sistema (classe no body)
+// e pede o modo do proprio navegador, para sumir tambem com a barra de
+// enderecos. Se o navegador negar o segundo, o primeiro ja resolve.
+function setSheetFullscreen(on) {
+  document.body.classList.toggle("sheet-full", on);
+  $("sheetFullscreen").textContent = on ? "Sair da tela cheia" : "Tela cheia";
+
+  if (on && !document.fullscreenElement) {
+    document.documentElement.requestFullscreen?.().catch(() => {});
+  } else if (!on && document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+
+  // A janela mudou de altura: cabe outro tanto de linha.
+  state.sheetWindow = { start: -1, end: -1, rows: -1 };
+  setTimeout(() => {
+    renderSheetWindow();
+    syncSheetScrollbars();
+  }, 120);
+}
+
+function toggleSheetFullscreen() {
+  setSheetFullscreen(!document.body.classList.contains("sheet-full"));
+}
+
+function exportSheetCsv() {
+  if (!state.sheet?.rows.length) return;
+  const header = SHEET_COLUMNS.map((column) => column.label);
+  const body = state.sheet.rows.map((row) => SHEET_COLUMNS.map((column) => {
+    if (column.field === "date") return row.dateBr;
+    if (column.field === "active") return row.active ? "ATIVO" : "INATIVO";
+    return row[column.field];
+  }));
+
+  const csv = [header, ...body]
+    .map((line) => line.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(";"))
+    .join("\r\n");
+
+  const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "planilha-cadastros.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+
 function renderSignups() {
   if (!state.signups) return;
+  fillSignupSelect("signupCity", state.signups.options.cities, "Todas");
   fillSignupSelect("signupPraca", state.signups.options.pracas, "Todas");
   fillSignupSelect("signupOrigin", state.signups.options.origins, "Todas");
   fillSignupSelect("signupModal", state.signups.options.modals, "Todos");
@@ -1366,9 +1907,10 @@ function renderSignups() {
 
 function exportSignupsCsv() {
   if (!state.signups?.rows.length) return;
-  const header = ["Data cadastro", "ID", "Entregador", "CPF", "Modal", "Praça", "Origem", "Última vez que rodou", "Dias sem rodar", "Corridas", "Dias escalado", "Situação"];
+  const header = ["Data cadastro", "Cidade", "ID", "Entregador", "CPF", "Modal", "Praça", "Origem", "Última vez que rodou", "Dias sem rodar", "Corridas", "Dias escalado", "Situação"];
   const body = state.signups.rows.map((row) => [
     row.dateBr,
+    row.city,
     row.id,
     row.name,
     row.cpf,
@@ -2604,6 +3146,55 @@ function render() {
   renderDailyResult();
 }
 
+// ── Melhores entregadores ────────────────────────────────────────────────────
+
+function dailyQueryParams() {
+  const params = new URLSearchParams(queryParams());
+  Object.entries(state.dailyFilter).forEach(([key, value]) => params.set(key, value));
+  return params.toString();
+}
+
+function readDailyFilterInputs() {
+  state.dailyFilter = {
+    sort: $("dailySort").value,
+    minOrders: $("dailyMinOrders").value || "0",
+    top: $("dailyTop").value,
+  };
+}
+
+async function loadDailyResult() {
+  state.dailyResult = await dataJson(`/api/daily-result?${dailyQueryParams()}`);
+  renderDailyResult();
+}
+
+// O download nao pode ser um link direto: com Supabase ligado a rota exige o
+// token no cabecalho, entao o arquivo vem por fetch e vira blob aqui.
+async function exportDailyResultXlsx() {
+  const button = $("dailyExport");
+  button.disabled = true;
+  button.textContent = "Gerando...";
+
+  try {
+    const url = `/api/daily-result/export?${dailyQueryParams()}`;
+    const response = state.supabaseEnabled ? await authFetch(url) : await fetch(url);
+    if (!response.ok) throw new Error("Nao foi possivel gerar o arquivo.");
+
+    const blob = await response.blob();
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `melhores-entregadores-${todayIso()}.xlsx`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    button.textContent = "Baixado";
+  } catch (error) {
+    console.error(error);
+    button.textContent = "Erro ao gerar";
+  } finally {
+    button.disabled = false;
+    setTimeout(() => { button.textContent = "Baixar Excel"; }, 1800);
+  }
+}
+
 function dailyResultRow(driver, rank, expandable) {
   return `
     <tr class="${expandable ? "driver-row" : ""}">
@@ -2616,8 +3207,9 @@ function dailyResultRow(driver, rank, expandable) {
       <td class="num">${fmtInt(driver.orders)}</td>
       <td class="num ${pctClass(driver.tsh)}">${fmtPct(driver.tsh)}</td>
       <td class="num ${pctClass(driver.ar)}">${fmtPct(driver.ar)}</td>
-      <td class="num ${pctClass(driver.caa)}">${fmtPct(driver.caa)}</td>
-      <td class="num ${pctClass(driver.ot)}">${fmtPct(driver.ot)}</td>
+      <td class="num ${errorPctClass(driver.caa)}">${fmtPct(driver.caa)}</td>
+      <td class="num ${errorPctClass(driver.ot)}">${fmtPct(driver.ot)}</td>
+      <td class="num daily-score ${pctClass(driver.score)}">${fmtPct(driver.score)}</td>
     </tr>`;
 }
 
@@ -2630,8 +3222,8 @@ function dailyResultShiftRow(driver, colspan) {
         <td class="num">${fmtInt(shift.orders)}</td>
         <td class="num ${pctClass(shift.tsh)}">${fmtPct(shift.tsh)}</td>
         <td class="num ${pctClass(shift.ar)}">${fmtPct(shift.ar)}</td>
-        <td class="num ${pctClass(shift.caa)}">${fmtPct(shift.caa)}</td>
-        <td class="num ${pctClass(shift.ot)}">${fmtPct(shift.ot)}</td>
+        <td class="num ${errorPctClass(shift.caa)}">${fmtPct(shift.caa)}</td>
+        <td class="num ${errorPctClass(shift.ot)}">${fmtPct(shift.ot)}</td>
       </tr>`).join("")
     : `<tr><td colspan="6">Sem dados por turno.</td></tr>`;
 
@@ -2647,27 +3239,59 @@ function dailyResultShiftRow(driver, colspan) {
 }
 
 function dailyResultTableHead(expandable) {
-  return `<thead><tr>${expandable ? "<th></th>" : ""}<th>#</th><th>ID</th><th>ENTREGADOR</th><th>HOTZONE</th><th>MODAL</th><th>PEDIDOS</th><th>TSH</th><th>AR</th><th>CAA</th><th>OT</th></tr></thead>`;
+  return `<thead><tr>${expandable ? "<th></th>" : ""}<th>#</th><th>ID</th><th>ENTREGADOR</th><th>HOTZONE</th><th>MODAL</th><th>PEDIDOS</th><th>TSH</th><th>AR</th><th>CAA</th><th>OT</th><th>NOTA</th></tr></thead>`;
+}
+
+function dailySortLabel() {
+  const sorts = state.dailyResult?.sorts || [];
+  return (sorts.find((item) => item.value === state.dailyResult.sort) || sorts[0])?.label || "Nota geral";
+}
+
+// A formula fica escrita na tela: ranking que ninguem entende vira ranking que
+// ninguem usa.
+function renderDailyResultInfo() {
+  const result = state.dailyResult;
+  const weights = result.weights || {};
+  const pct = (value) => `${Math.round((value || 0) * 100)}%`;
+  const total = result.cities.reduce((sumValue, group) => sumValue + group.drivers, 0);
+  const fora = result.cities.reduce((sumValue, group) => sumValue + group.belowMin, 0);
+
+  $("dailyResultInfo").innerHTML = `Ordenado por <b>${escapeHtml(dailySortLabel())}</b>`
+    + ` - <b>${fmtInt(total)}</b> entregadores no período`
+    + (result.minOrders > 0 ? `, <b>${fmtInt(fora)}</b> fora do ranking por terem menos de ${fmtInt(result.minOrders)} corridas` : "")
+    + `.<br />A <b>nota</b> pesa TSH ${pct(weights.tsh)} e AR ${pct(weights.ar)} pelo valor;`
+    + ` CAA ${pct(weights.caa)} e Overtime ${pct(weights.ot)} invertidos (são taxa de erro: 0% é nota cheia,`
+    + ` o pior da cidade é zero); e volume de corridas ${pct(weights.orders)} como fatia do maior da cidade.`;
 }
 
 function renderDailyResult() {
   const container = $("dailyResultCities");
-  if (!state.dailyResult || !state.dailyResult.cities.length) {
+  if (!state.dailyResult) return;
+
+  $("dailySort").innerHTML = (state.dailyResult.sorts || [])
+    .map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+  $("dailySort").value = state.dailyResult.sort;
+
+  if (!state.dailyResult.cities.length) {
+    $("dailyResultInfo").textContent = "";
     container.innerHTML = `<div class="finance-empty-state">Nenhum entregador encontrado para os filtros selecionados.</div>`;
     return;
   }
+
+  renderDailyResultInfo();
 
   container.innerHTML = state.dailyResult.cities.map((group) => `
     <section class="panel page-panel daily-result-city">
       <div class="panel-head">
         <h2 class="city-cell ${cityToneClass(group.city)}">${group.city}</h2>
-        <span>${group.top.length + group.rest.length} entregadores no periodo</span>
+        <span>${group.drivers} entregadores no periodo</span>
       </div>
-      <h3 class="daily-result-subhead">Top 10 em corridas finalizadas</h3>
+      <h3 class="daily-result-subhead">${state.dailyResult.top > 0 ? `Top ${group.top.length}` : "Ranking completo"} por ${escapeHtml(dailySortLabel())}</h3>
       <div class="table-wrap">
         <table class="expandable-table">
           ${dailyResultTableHead(true)}
-          <tbody>${group.top.map((driver, index) => `${dailyResultRow(driver, index + 1, true)}${dailyResultShiftRow(driver, 11)}`).join("") || `<tr><td colspan="11">Sem dados no periodo.</td></tr>`}</tbody>
+          <tbody>${group.top.map((driver, index) => `${dailyResultRow(driver, index + 1, true)}${dailyResultShiftRow(driver, 12)}`).join("") || `<tr><td colspan="12">Sem dados no periodo.</td></tr>`}</tbody>
         </table>
       </div>
       ${group.rest.length ? `
@@ -2675,7 +3299,7 @@ function renderDailyResult() {
       <div class="table-wrap tall">
         <table class="expandable-table">
           ${dailyResultTableHead(true)}
-          <tbody>${group.rest.map((driver, index) => `${dailyResultRow(driver, index + 11, true)}${dailyResultShiftRow(driver, 11)}`).join("")}</tbody>
+          <tbody>${group.rest.map((driver, index) => `${dailyResultRow(driver, group.top.length + index + 1, true)}${dailyResultShiftRow(driver, 12)}`).join("")}</tbody>
         </table>
       </div>` : ""}
     </section>`).join("");
@@ -2685,7 +3309,8 @@ function configureFiltersForView(view) {
   const filters = document.querySelector(".filters");
   // Novos cadastros tem barra propria: dois conjuntos de filtro na mesma tela
   // so criam duvida sobre qual esta valendo.
-  const onSignupPage = view === "operacional" && state.opPage === "cadastro" && state.cadastroView === "novos";
+  const onSignupPage = view === "operacional" && state.opPage === "cadastro"
+    && ["novos", "planilha"].includes(state.cadastroView);
   if (view === "usuarios" || view === "upload" || onSignupPage) {
     filters.classList.add("hidden");
     return;
@@ -2818,13 +3443,15 @@ function setOperationalPage(page) {
       title: "Dash Operacional - KPIs",
       subtitle: "Primeira pagina operacional com TSH por cidade, critical, turnos, deficit de horas e tabela de hotzones.",
     },
+    // Sem linha de apoio: as abas ja dizem o que cada uma faz, e o espaco vale
+    // mais como linha de planilha.
     cadastro: {
       title: "Dash Operacional - Cadastro",
-      subtitle: "Novos cadastros por dia, de onde vem cada um e a última data que rodou; na segunda aba, a base completa de entregadores.",
+      subtitle: "",
     },
     resultado: {
       title: "Dash Operacional - Resultado Diario",
-      subtitle: "Top 10 por corridas finalizadas em cada cidade e os demais logo abaixo. Clique na linha para abrir o detalhe por turno.",
+      subtitle: "Os melhores entregadores de cada cidade por nota geral, TSH, AR, CAA, Overtime ou corridas. Clique na linha para abrir o detalhe por turno.",
     },
     evolucao: {
       title: "Dash Operacional - Evolucao",
@@ -3371,6 +3998,7 @@ document.querySelectorAll(".chart-period-btn[data-period]").forEach((button) => 
 // ─── Eventos da pagina de cadastro ──────────────────────────────────────────
 
 function setCadastroView(view) {
+  if (view !== "planilha") setSheetFullscreen(false);
   state.cadastroView = view;
   document.querySelectorAll(".cadastro-tab").forEach((button) => {
     button.classList.toggle("active", button.dataset.cadastroView === view);
@@ -3382,11 +4010,111 @@ function setCadastroView(view) {
   saveLastView();
   // O canvas so mede certo depois de visivel: redesenha ao abrir a aba.
   if (view === "novos" && state.signups) renderSignupChart();
+  if (view === "planilha" && !state.sheet) {
+    loadSignupSheet().catch((error) => setSheetMessage(error.message || "Erro ao carregar a planilha."));
+  }
 }
 
 document.querySelectorAll(".cadastro-tab").forEach((button) => {
   button.addEventListener("click", () => setCadastroView(button.dataset.cadastroView));
 });
+
+["sheetSearch", "sheetCity", "sheetMonth", "sheetActive"].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    readSheetFilterInputs();
+    loadSignupSheet().catch((error) => setSheetMessage(error.message || "Erro ao carregar a planilha."));
+  });
+});
+
+// Rolagem: redesenha a janela visivel no proximo quadro, nunca a cada pixel.
+let sheetScrollFrame = 0;
+$("sheetWrap").addEventListener("scroll", () => {
+  if (sheetScrollFrame) return;
+  sheetScrollFrame = requestAnimationFrame(() => {
+    sheetScrollFrame = 0;
+    renderSheetWindow();
+    syncSheetScrollbars();
+  });
+});
+
+$("sheetScrollTop").addEventListener("scroll", () => {
+  mirrorSheetScroll($("sheetScrollTop"), $("sheetWrap"));
+});
+
+$("sheetGrid").addEventListener("click", (event) => {
+  const nav = event.target.closest("[data-sheet-nav]");
+  if (nav) scrollSheetSideways(Number(nav.dataset.sheetNav));
+});
+
+window.addEventListener("resize", () => {
+  state.sheetWindow = { start: -1, end: -1, rows: -1 };
+  renderSheetWindow();
+  syncSheetScrollbars();
+});
+
+$("sheetTable").addEventListener("mousedown", startSheetResize);
+state.sheetWidths = readSheetWidths();
+
+$("sheetTable").addEventListener("change", (event) => {
+  const field = event.target.closest("[data-field]");
+  if (!field) return;
+  const row = field.closest("tr");
+  // A cor da linha muda na hora; o servidor confirma logo em seguida.
+  if (field.dataset.field === "active") row.classList.toggle("inativo", field.value === "0");
+  saveSheetRow(row);
+});
+
+// Enter na celula fecha a edicao como no Google Sheets, sem enviar formulario.
+$("sheetTable").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const field = event.target.closest("[data-field]");
+  if (!field) return;
+  event.preventDefault();
+  field.blur();
+});
+
+$("sheetTable").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-sheet-delete]");
+  if (button) deleteSheetRow(button.dataset.sheetDelete);
+});
+
+// A linha nova mora no cabecalho fixo: basta subir a rolagem e focar o nome.
+$("sheetAdd").addEventListener("click", () => {
+  const first = $("sheetTable").querySelector('.sheet-row-new [data-field="name"]');
+  if (!first) return;
+  $("sheetWrap").scrollTop = 0;
+  first.focus();
+});
+
+$("sidebarToggle").addEventListener("click", () => {
+  setSidebarCollapsed(!document.body.classList.contains("sidebar-collapsed"));
+});
+restoreSidebar();
+
+["dailySort", "dailyMinOrders", "dailyTop"].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    readDailyFilterInputs();
+    loadDailyResult().catch((error) => console.error(error));
+  });
+});
+
+$("dailyExport").addEventListener("click", exportDailyResultXlsx);
+
+$("sheetExport").addEventListener("click", exportSheetCsv);
+$("sheetFullscreen").addEventListener("click", toggleSheetFullscreen);
+
+// Esc no modo do navegador sai sozinho; a classe do body precisa acompanhar,
+// senao o sistema fica sem menu dentro da janela normal.
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) setSheetFullscreen(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && document.body.classList.contains("sheet-full")) setSheetFullscreen(false);
+});
+$("sheetPasteImport").addEventListener("click", importPastedSheet);
+$("sheetPasteToggle").addEventListener("click", () => $("sheetPastePanel").classList.toggle("hidden"));
+$("sheetPasteCancel").addEventListener("click", () => $("sheetPastePanel").classList.add("hidden"));
 
 document.querySelectorAll("[data-signup-period]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -3398,7 +4126,7 @@ document.querySelectorAll("[data-signup-period]").forEach((button) => {
   });
 });
 
-["signupStart", "signupEnd", "signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => {
+["signupStart", "signupEnd", "signupCity", "signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => {
   $(id).addEventListener("change", () => {
     readSignupFilterInputs();
     loadSignups().catch((error) => console.error(error));
@@ -3408,7 +4136,7 @@ document.querySelectorAll("[data-signup-period]").forEach((button) => {
 signupPeopleInit();
 
 $("signupClear").addEventListener("click", () => {
-  ["signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => { $(id).value = ""; });
+  ["signupCity", "signupPraca", "signupOrigin", "signupModal", "signupStatus"].forEach((id) => { $(id).value = ""; });
   state.signupPeople = [];
   signupPeopleRender();
   $("signupStart").value = state.signups?.range.min || "";
@@ -3427,24 +4155,6 @@ $("signupStatusCards").addEventListener("click", (event) => {
 });
 
 $("signupExport").addEventListener("click", exportSignupsCsv);
-
-$("signupSync").addEventListener("click", async () => {
-  const button = $("signupSync");
-  button.disabled = true;
-  button.textContent = "Lendo planilha...";
-  try {
-    state.signups = await dataJson(`/api/signups/refresh?${signupQueryParams()}`, { method: "POST" });
-    applySignupRange();
-    renderSignups();
-    button.textContent = "Atualizado";
-  } catch (error) {
-    console.error(error);
-    button.textContent = "Erro ao atualizar";
-  } finally {
-    button.disabled = false;
-    setTimeout(() => { button.textContent = "Atualizar planilha"; }, 1800);
-  }
-});
 
 $("dailyResultCities").addEventListener("click", (event) => {
   const row = event.target.closest(".driver-row");

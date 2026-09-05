@@ -28,12 +28,16 @@ const TRANSFEERA_DIR = path.join(BI_DIR, "TRANSFEERA");
 const SIGNUP_DIR = path.join(BI_DIR, "CADASTROS");
 const supabase = createSupabaseApi();
 
-// A guia CADASTROS vive numa planilha do Google: o servidor le direto de la e
-// guarda uma copia em disco para nao ficar sem dados se a internet cair.
-const SIGNUP_SHEET_ID = process.env.CADASTROS_SHEET_ID || "1OYmE_rSu9DPMtrDFsCnJB0Y7-Fq2RyGkeBasPKL5vtI";
-const SIGNUP_SHEET_TAB = process.env.CADASTROS_SHEET_TAB || "CADASTROS";
-const SIGNUP_CACHE_FILE = path.join(SIGNUP_DIR, "_cadastros-google.csv");
-const SIGNUP_REFRESH_MINUTES = Number(process.env.CADASTROS_REFRESH_MINUTES || 30);
+// Os cadastros moram dentro do sistema, em cadastros.json gravado pelo proprio
+// servidor. A planilha do Google saiu de cena. A carga inicial vem de um dos
+// arquivos abaixo, lidos uma unica vez: o .json versionado (para a instalacao
+// nova ja nascer com a base de Sao Paulo) ou, na falta dele, a ultima copia da
+// planilha que tenha sobrado em disco.
+const SIGNUP_SEED_FILES = [
+  path.join(SIGNUP_DIR, "cadastros-inicial.json"),
+  path.join(SIGNUP_DIR, "_cadastros-google.csv"),
+];
+const SIGNUP_DEFAULT_CITY = process.env.CADASTROS_CIDADE_PADRAO || "SAO PAULO";
 
 const UPLOAD_TARGETS = ["CURITIBA", "GOIANIA", "RIO DE JANEIRO", "SÃO PAULO", "FINANCEIRO", "TRANSFEERA", "CADASTROS"];
 
@@ -417,10 +421,10 @@ function readTransferRows() {
 }
 
 // ---------------------------------------------------------------------------
-// CADASTROS (guia CADASTROS da planilha do Google)
+// CADASTROS (base interna do sistema, gravada em cadastros.json)
 // ---------------------------------------------------------------------------
 
-// A planilha e preenchida na mao: praca, modal e origem chegam com acento,
+// O cadastro e preenchido na mao: praca, modal e origem chegam com acento,
 // caixa e grafia trocados. Sem normalizar, "capitação" e "capitacao" viravam
 // duas linhas diferentes no resumo.
 const PRACA_LIST = ["Guaianases", "Itaquera", "Jardim Angélica", "Mooca", "Paulista", "Penha", "Santana", "Santo Amaro"];
@@ -452,11 +456,51 @@ function normalizePraca(value) {
   return PRACA_BY_KEY.get(key) || "";
 }
 
+// Praca fora da lista de Sao Paulo continua sendo descartada: em SP a lista e
+// fechada e erro de digitacao viraria praca nova no resumo. As outras cidades
+// ainda nao tem lista propria, entao ali vale o que foi digitado.
+function normalizeSignupPraca(value, city) {
+  const known = normalizePraca(value);
+  if (known) return known;
+  if (city === "SAO PAULO") return "";
+  const plain = String(value ?? "").trim();
+  return plain ? titleCase(plain) : "";
+}
+
 // "Penha, Itaquera" e `"Mooca, Penha", Penha` sao a mesma coisa: uma lista de
 // pracas com aspas sobrando do copiar/colar.
-function splitPracas(value) {
-  const parts = String(value ?? "").split(",").map((part) => normalizePraca(part)).filter(Boolean);
-  return [...new Set(parts)];
+function splitPracas(value, city) {
+  const parts = Array.isArray(value) ? value : String(value ?? "").split(",");
+  return [...new Set(parts.map((part) => normalizeSignupPraca(part, city)).filter(Boolean))];
+}
+
+// Cadastro sem cidade e cadastro de Sao Paulo: era a unica praca que existia
+// quando a base foi criada.
+function normalizeSignupCity(value) {
+  const plain = String(value ?? "").trim();
+  return plain ? normalizeCity(plain) : SIGNUP_DEFAULT_CITY;
+}
+
+// Cadastro que veio da planilha antiga nao tem a coluna: quem ja estava na base
+// entra como ativo, senao 4 mil pessoas apareceriam desligadas de uma vez.
+const SIGNUP_INACTIVE_WORDS = ["inativo", "inativa", "nao", "n", "false", "0", "desligado", "desligada", "bloqueado", "bloqueada", "cancelado", "cancelada"];
+
+function normalizeSignupActive(value) {
+  if (typeof value === "boolean") return value;
+  const plain = normalizeText(value).toLowerCase().trim();
+  if (!plain) return true;
+  return !SIGNUP_INACTIVE_WORDS.includes(plain);
+}
+
+// Telefone chega de todo jeito: com +55, com espaco, com traco, so numeros. O
+// que da para reconhecer vira (11) 91234-5678; o resto fica como foi digitado,
+// porque contato meia-boca ainda e melhor que contato apagado.
+function normalizeSignupContact(value) {
+  const raw = String(value ?? "").trim();
+  const digits = raw.replace(/\D/g, "").replace(/^55(?=\d{10,11}$)/, "");
+  if (digits.length === 11) return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+  if (digits.length === 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+  return raw;
 }
 
 function normalizeOrigin(value) {
@@ -524,7 +568,8 @@ function signupFromRaw(raw, source) {
   const name = String(rawValue(raw, ["ENTREGADOR", "NOME", "Nome do entregador"]) ?? "").replace(/\s+/g, " ").trim();
   if (!date || (!id && !cpf && !name)) return null;
 
-  const pracas = splitPracas(rawValue(raw, ["PRAÇA", "PRACA", "Praça", "REGIÃO", "REGIAO"]));
+  const city = normalizeSignupCity(rawValue(raw, ["CIDADE", "Cidade", "CITY"]));
+  const pracas = splitPracas(rawValue(raw, ["PRAÇA", "PRACA", "Praça", "REGIÃO", "REGIAO"]), city);
   const iso = isoDate(date);
 
   return {
@@ -539,6 +584,10 @@ function signupFromRaw(raw, source) {
     praca: pracas[0] || "Sem praça",
     pracas: pracas.length ? pracas : ["Sem praça"],
     origin: normalizeOrigin(rawValue(raw, ["ORIGEM", "Origem"])),
+    city,
+    contact: normalizeSignupContact(rawValue(raw, ["CONTATO", "Contato", "TELEFONE", "Telefone", "CELULAR", "WHATSAPP"])),
+    active: normalizeSignupActive(rawValue(raw, ["SITUAÇÃO", "SITUACAO", "Situacao", "ATIVO", "STATUS"])),
+    recordKey: "",
     source,
   };
 }
@@ -573,77 +622,314 @@ function readSignupFiles() {
   return rows;
 }
 
-function readSignupCache() {
-  if (!fs.existsSync(SIGNUP_CACHE_FILE)) return [];
-  const rows = csvToObjects(fs.readFileSync(SIGNUP_CACHE_FILE, "utf8"))
-    .map((raw) => signupFromRaw(raw, "Google Sheets (copia local)"))
-    .filter(Boolean);
-  return rows;
+// A base fica num JSON por instalacao, no volume quando existe volume e na raiz
+// do projeto quando nao existe - mesmo criterio de promocoes.json. Cada linha e
+// { key, date, id, cpf, name, modal, pracas, origin, city, createdAt, updatedAt }.
+
+function signupStoreFile() {
+  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "cadastros.json");
+  return path.join(__dirname, "cadastros.json");
 }
 
-function signupSheetUrl() {
-  return `https://docs.google.com/spreadsheets/d/${SIGNUP_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(SIGNUP_SHEET_TAB)}`;
+function readSignupStore() {
+  const file = signupStoreFile();
+  if (!fs.existsSync(file)) return [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-async function fetchSignupSheet() {
-  const response = await fetch(signupSheetUrl(), { redirect: "follow" });
-  if (!response.ok) throw new Error(`Google respondeu ${response.status}`);
-  const text = await response.text();
-  if (/<html/i.test(text.slice(0, 200))) throw new Error("A planilha nao esta publica para leitura por link.");
-  const rows = csvToObjects(text).map((raw) => signupFromRaw(raw, "Google Sheets")).filter(Boolean);
-  if (!rows.length) throw new Error("A guia veio vazia.");
-
-  fs.mkdirSync(SIGNUP_DIR, { recursive: true });
-  fs.writeFileSync(SIGNUP_CACHE_FILE, text, "utf8");
-  return rows;
+function writeSignupStore(records) {
+  fs.writeFileSync(signupStoreFile(), JSON.stringify(records, null, 2), "utf8");
 }
 
-let signupSheetRows = readSignupCache();
+let signupKeySeq = 0;
+
+function nextSignupKey() {
+  signupKeySeq += 1;
+  return `c${Date.now().toString(36)}${signupKeySeq.toString(36)}`;
+}
+
+// Mesma chave do dedupe das linhas: uma pessoa por dia.
+function signupIdentity(record) {
+  return `${record.id || record.cpf || record.name}||${record.date}`;
+}
+
+// O registro guarda o que foi digitado e a normalizacao acontece na leitura,
+// para que regra nova de praca ou origem valha tambem para o que ja esta salvo.
+function signupRecordRow(record) {
+  const date = parseDate(record.date);
+  if (!date) return null;
+  const iso = isoDate(date);
+  const city = normalizeSignupCity(record.city);
+  const pracas = splitPracas(record.pracas, city);
+  const name = String(record.name ?? "").replace(/\s+/g, " ").trim();
+
+  return {
+    date: iso,
+    dateBr: brDate(date),
+    week: weekStartIso(iso),
+    month: iso.slice(0, 7),
+    id: normalizeDriverId(record.id),
+    cpf: normalizeCpf(record.cpf),
+    name: name || "Sem nome",
+    modal: normalizeModal(record.modal),
+    praca: pracas[0] || "Sem praça",
+    pracas: pracas.length ? pracas : ["Sem praça"],
+    origin: normalizeOrigin(record.origin),
+    city,
+    contact: normalizeSignupContact(record.contact),
+    active: normalizeSignupActive(record.active),
+    recordKey: record.key,
+    source: "Base do sistema",
+  };
+}
+
+// Monta o registro a partir do formulario. Devolve { error } em vez de lancar:
+// quem chama e a rota, e a mensagem vai direto para a tela.
+function buildSignupRecord(input, existing) {
+  const date = parseDate(input.date);
+  if (!date) return { error: "Informe a data do cadastro." };
+
+  const name = String(input.name ?? "").replace(/\s+/g, " ").trim();
+  if (!name) return { error: "Informe o nome do entregador." };
+
+  const id = normalizeDriverId(input.id);
+  if (String(input.id ?? "").trim() && !id) return { error: "ID do entregador invalido: use somente os numeros." };
+
+  const cpf = normalizeCpf(input.cpf);
+  if (String(input.cpf ?? "").trim() && !cpf) return { error: "CPF invalido." };
+
+  const city = normalizeSignupCity(input.city);
+  if (!cityOrder.includes(city)) return { error: "Cidade invalida." };
+
+  const stamp = new Date().toISOString();
+  return {
+    record: {
+      key: existing?.key || nextSignupKey(),
+      date: isoDate(date),
+      id,
+      cpf,
+      name,
+      modal: String(input.modal ?? "").trim(),
+      pracas: splitPracas(input.pracas ?? input.praca, city),
+      origin: String(input.origin ?? "").trim(),
+      city,
+      contact: normalizeSignupContact(input.contact),
+      active: normalizeSignupActive(input.active),
+      createdAt: existing?.createdAt || stamp,
+      updatedAt: stamp,
+    },
+  };
+}
+
+function signupRecordFromRaw(raw) {
+  const row = signupFromRaw(raw, "");
+  if (!row) return null;
+  const stamp = new Date().toISOString();
+  return {
+    key: nextSignupKey(),
+    date: row.date,
+    id: row.id,
+    cpf: row.cpf,
+    name: row.name === "Sem nome" ? "" : row.name,
+    modal: row.modal === "Sem modal" ? "" : row.modal,
+    pracas: row.pracas.filter((praca) => praca !== "Sem praça"),
+    origin: row.origin === "Sem origem" ? "" : row.origin,
+    city: row.city,
+    contact: row.contact,
+    active: row.active,
+    createdAt: stamp,
+    updatedAt: stamp,
+  };
+}
+
+function readSignupSeed() {
+  const file = SIGNUP_SEED_FILES.find((candidate) => fs.existsSync(candidate));
+  if (!file) return [];
+  const text = fs.readFileSync(file, "utf8");
+
+  if (file.endsWith(".json")) {
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed.map((record) => ({ ...record, key: record.key || nextSignupKey() })) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return csvToObjects(text).map((raw) => signupRecordFromRaw(raw)).filter(Boolean);
+}
+
+// Primeira carga: o lote inicial vira a base, tudo como Sao Paulo. Roda uma vez
+// so - existindo cadastros.json, a semente nunca mais e lida e quem manda e a
+// base que o sistema grava.
+function seedSignupStore() {
+  if (fs.existsSync(signupStoreFile())) return 0;
+  const seen = new Set();
+  const records = [];
+
+  for (const record of readSignupSeed()) {
+    const identity = signupIdentity(record);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    records.push(record);
+  }
+
+  writeSignupStore(records);
+  return records.length;
+}
+
 let signupStatus = {
-  sheetId: SIGNUP_SHEET_ID,
-  tab: SIGNUP_SHEET_TAB,
-  origin: signupSheetRows.length ? "copia local" : "sem dados",
-  fetchedAt: "",
-  error: "",
-  sheetRows: signupSheetRows.length,
+  origin: "Base do sistema",
+  file: path.relative(__dirname, signupStoreFile()),
+  seeded: seedSignupStore(),
+  storeRows: 0,
   fileRows: 0,
+  updatedAt: "",
 };
 
-function mergeSignups() {
+// A base do sistema manda. Os .xlsx enviados em Upload BI > Cadastros entram
+// como reforco e perdem no dedupe quando repetem alguem do mesmo dia.
+function loadSignupData() {
+  const storeRows = readSignupStore().map(signupRecordRow).filter(Boolean);
   const fileRows = readSignupFiles();
-  signupStatus.fileRows = fileRows.length;
-  return dedupeSignups([...signupSheetRows, ...fileRows]);
+  const file = signupStoreFile();
+
+  signupStatus = {
+    ...signupStatus,
+    storeRows: storeRows.length,
+    fileRows: fileRows.length,
+    updatedAt: fs.existsSync(file) ? fs.statSync(file).mtime.toISOString() : "",
+  };
+
+  return dedupeSignups([...storeRows, ...fileRows]);
 }
 
-async function refreshSignupSheet() {
-  try {
-    signupSheetRows = await fetchSignupSheet();
-    signupStatus = {
-      ...signupStatus,
-      origin: "Google Sheets",
-      fetchedAt: new Date().toISOString(),
-      error: "",
-      sheetRows: signupSheetRows.length,
-    };
-  } catch (error) {
-    const cached = readSignupCache();
-    if (cached.length) signupSheetRows = cached;
-    signupStatus = {
-      ...signupStatus,
-      origin: cached.length ? "copia local" : "sem dados",
-      error: error.message || "Falha ao ler a planilha.",
-      sheetRows: signupSheetRows.length,
-    };
-    console.error(`Cadastros: falha ao ler a planilha do Google (${signupStatus.error})`);
-  }
-  signupData = mergeSignups();
-  return signupData;
+// Grava a base e recarrega a lista em memoria de uma vez so.
+function saveSignupStore(records) {
+  writeSignupStore(records);
+  signupData = loadSignupData();
+}
+
+// ── A planilha dentro do sistema ─────────────────────────────────────────────
+// A tela de indicadores mostra o dado ja normalizado ("Sem praça", "Sem modal").
+// A planilha precisa do oposto: devolve a celula do jeito que foi digitada, para
+// quem edita ver o proprio texto de volta e nao um rotulo inventado pelo sistema.
+
+function signupSheetRow(record) {
+  const date = parseDate(record.date);
+  const iso = date ? isoDate(date) : "";
+  const pracas = Array.isArray(record.pracas) ? record.pracas : String(record.pracas ?? "").split(",");
+
+  return {
+    key: record.key,
+    date: iso,
+    dateBr: date ? brDate(date) : "",
+    month: iso.slice(0, 7),
+    id: String(record.id ?? ""),
+    name: String(record.name ?? ""),
+    cpf: String(record.cpf ?? ""),
+    contact: normalizeSignupContact(record.contact),
+    modal: String(record.modal ?? ""),
+    praca: pracas.map((praca) => String(praca ?? "").trim()).filter(Boolean).join(", "),
+    origin: String(record.origin ?? ""),
+    city: normalizeSignupCity(record.city),
+    active: normalizeSignupActive(record.active),
+    updatedAt: record.updatedAt || "",
+  };
+}
+
+function matchesSheetSearch(row, terms) {
+  const name = normalizeText(row.name).toLowerCase();
+  return terms.some((term) => name.includes(term.text)
+    || (term.digits.length >= 3
+      && (row.cpf.includes(term.digits) || row.id.includes(term.digits) || row.contact.replace(/\D/g, "").includes(term.digits))));
+}
+
+// A grade manda a base inteira, sem corte: quem desenha so as linhas visiveis e
+// a tela. Antes o corte existia porque cada linha virava dez campos no HTML e o
+// navegador travava - com a rolagem virtual esse teto deixou de existir.
+function buildSignupSheet(query) {
+  const all = readSignupStore().map(signupSheetRow).filter((row) => row.date);
+  const terms = searchTerms(query.q);
+
+  const rows = all
+    .filter((row) => {
+      if (query.city && row.city !== query.city) return false;
+      if (query.month && row.month !== query.month) return false;
+      if (query.active === "ativo" && !row.active) return false;
+      if (query.active === "inativo" && row.active) return false;
+      return !terms.length || matchesSheetSearch(row, terms);
+    })
+    .sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name, "pt-BR"));
+
+  return {
+    rows,
+    filtered: rows.length,
+    total: all.length,
+    ativos: all.filter((row) => row.active).length,
+    inativos: all.filter((row) => !row.active).length,
+    file: signupStatus.file,
+    updatedAt: signupStatus.updatedAt,
+    options: {
+      cities: uniq(all.map((row) => row.city)),
+      months: [...new Set(all.map((row) => row.month))].filter(Boolean).sort().reverse(),
+      cityChoices: cityOrder,
+      pracaChoices: PRACA_LIST,
+      modalChoices: ["Motocicleta", "Bicicleta"],
+      originChoices: uniq(all.map((row) => normalizeOrigin(row.origin))).filter((origin) => origin !== "Sem origem"),
+    },
+  };
+}
+
+// Gravar pela planilha devolve a propria planilha; gravar por outra tela devolve
+// o painel de indicadores. Uma chamada so, sem ida e volta extra.
+function signupResponse(query) {
+  return query.view === "sheet" ? buildSignupSheet(query) : buildSignups(query);
+}
+
+// ── Colar direto do Google Sheets ────────────────────────────────────────────
+// Ctrl+C no Google Sheets produz TSV. Exportar produz CSV. Os dois caem aqui.
+const SIGNUP_PASTE_COLUMNS = ["DATA", "ID", "ENTREGADOR", "CPF", "CONTATO", "MODAL", "PRAÇA", "ORIGEM", "CIDADE", "SITUAÇÃO"];
+
+function splitPastedLine(line) {
+  if (line.includes("\t")) return line.split("\t");
+  if (line.includes(";")) return line.split(";");
+  return parseCsv(line)[0] || [];
+}
+
+function parsePastedSignups(text, fallbackCity) {
+  const lines = String(text ?? "").split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return [];
+
+  // Colando com o cabecalho junto, ele manda nas colunas; colando so as linhas,
+  // vale a ordem da planilha de cadastros.
+  const first = splitPastedLine(lines[0]).map((cell) => normalizedKey(cell));
+  const header = first.includes("entregador") || first.includes("data") ? splitPastedLine(lines.shift()) : null;
+
+  return lines.map((line) => {
+    const cells = splitPastedLine(line);
+    const raw = {};
+    const names = header || SIGNUP_PASTE_COLUMNS;
+
+    names.forEach((name, index) => {
+      const key = String(name ?? "").trim();
+      if (key) raw[key] = cells[index] ?? "";
+    });
+
+    if (fallbackCity && !String(rawValue(raw, ["CIDADE", "Cidade", "CITY"]) ?? "").trim()) raw.CIDADE = fallbackCity;
+    return raw;
+  });
 }
 
 let data = readRows();
 let financeData = readFinanceRows();
 let transferData = readTransferRows();
-let signupData = mergeSignups();
+let signupData = loadSignupData();
 let activityIndex = buildActivityIndex();
 let loadedAt = new Date();
 let sourceFiles = walkXlsx(BI_DIR);
@@ -652,7 +938,7 @@ function reloadData() {
   data = readRows();
   financeData = readFinanceRows();
   transferData = readTransferRows();
-  signupData = mergeSignups();
+  signupData = loadSignupData();
   activityIndex = buildActivityIndex();
   loadedAt = new Date();
   sourceFiles = walkXlsx(BI_DIR);
@@ -1019,7 +1305,7 @@ function enrichSignup(row, reference, operationalStart = "") {
     matched: Boolean(entry),
     orders: entry?.orders || 0,
     shiftDays: entry?.shiftDays.size || 0,
-    city: entry ? mostFrequent(entry.cities) : "",
+    operationalCity: entry ? mostFrequent(entry.cities) : "",
     hotzone: entry ? mostFrequent(entry.hotzones) : "",
     operationalName: entry?.name || "",
     earned: entry?.earned || 0,
@@ -1066,6 +1352,7 @@ function filterSignups(query, rows) {
   return rows.filter((row) => {
     if (start && row.date < start) return false;
     if (end && row.date > end) return false;
+    if (query.city && row.city !== query.city) return false;
     if (query.praca && !row.pracas.includes(query.praca)) return false;
     if (query.origin && row.origin !== query.origin) return false;
     if (query.modal && row.modal !== query.modal) return false;
@@ -1180,14 +1467,21 @@ function buildSignups(query) {
     rows: [...rows].sort((a, b) => b.date.localeCompare(a.date) || a.name.localeCompare(b.name, "pt-BR")).slice(0, 1500),
     rowTotal: rows.length,
     options: {
+      cities: uniq(all.map((row) => row.city)),
       pracas: uniq(all.flatMap((row) => row.pracas)),
       origins: uniq(all.map((row) => row.origin)),
       modals: uniq(all.map((row) => row.modal)),
       statuses: Object.entries(SIGNUP_STATUS_LABELS).map(([value, label]) => ({ value, label })),
+      // Listas do formulario, nao do filtro: o filtro mostra so o que existe na
+      // base, o formulario precisa mostrar tudo que da para digitar.
+      cityChoices: cityOrder,
+      pracaChoices: PRACA_LIST,
+      modalChoices: ["Motocicleta", "Bicicleta"],
+      originChoices: uniq(all.map((row) => row.origin)).filter((origin) => origin !== "Sem origem"),
     },
     range: { min: minIso(all, "date"), max: maxIso(all, "date") },
     coverage,
-    source: { ...signupStatus, url: `https://docs.google.com/spreadsheets/d/${SIGNUP_SHEET_ID}` },
+    source: { ...signupStatus },
   };
 }
 
@@ -1249,7 +1543,45 @@ function buildDriverShifts(driverRows) {
   }).filter(Boolean);
 }
 
-function buildDailyResult(rows) {
+// "Melhor entregador" nao e quem fez mais corrida: e quem entrega volume com
+// qualidade. A nota junta os quatro indicadores que a operacao cobra mais o
+// volume, para nao perder para quem fez tres corridas perfeitas e sumiu.
+//
+// TSH e AR sao taxas de acerto (mediana 80% e 74%): valem direto. CAA e OT sao
+// taxas de erro (mediana 0,4%, pior caso 26%): entram invertidas, senao a nota
+// premiaria justamente quem mais cancela e mais atrasa.
+const DRIVER_SCORE_WEIGHTS = { tsh: 0.35, ar: 0.20, caa: 0.20, ot: 0.10, orders: 0.15 };
+
+const DRIVER_SORTS = [
+  { value: "score", label: "Nota geral" },
+  { value: "orders", label: "Corridas finalizadas" },
+  { value: "tsh", label: "TSH" },
+  { value: "ar", label: "AR" },
+  { value: "caa", label: "CAA (menor primeiro)" },
+  { value: "ot", label: "Overtime (menor primeiro)" },
+];
+
+// Tudo e comparado dentro da propria cidade. Volume: fatia do maior, senao o
+// numero cru so diria qual cidade e maior. Erro: fatia do pior, senao um CAA de
+// 0,4% contra 26% viraria diferenca de meio ponto e a coluna nao pesaria nada.
+function driverScoreParts(driver, worst) {
+  const share = (value, most) => (most > 0 ? Math.min(1, (value || 0) / most) : 0);
+  return {
+    tsh: Math.min(1, driver.tsh || 0),
+    ar: Math.min(1, driver.ar || 0),
+    caa: 1 - share(driver.caa, worst.caa),
+    ot: 1 - share(driver.ot, worst.ot),
+    orders: share(driver.orders, worst.orders),
+  };
+}
+
+function driverScore(driver, worst) {
+  const parts = driverScoreParts(driver, worst);
+  return Object.entries(DRIVER_SCORE_WEIGHTS)
+    .reduce((total, [key, weight]) => total + weight * parts[key], 0);
+}
+
+function buildDailyResult(rows, query = {}) {
   const drivers = [...groupBy(rows, (row) => `${row.city}||${row.cpf}||${row.id}`).values()]
     .map((driverRows) => {
       const base = driverRows[0];
@@ -1271,21 +1603,89 @@ function buildDailyResult(rows) {
     })
     .filter((driver) => driver.name || driver.cpf || driver.id);
 
+  const sort = DRIVER_SORTS.some((item) => item.value === query.sort) ? query.sort : "score";
+  // Sem piso, uma corrida unica com 100% em tudo lidera o ranking da cidade.
+  const minOrders = Math.max(0, Math.floor(Number(query.minOrders ?? 10)) || 0);
+  // 0 = todos: quem pede "todos" quer a planilha inteira no Excel.
+  const top = Math.max(0, Math.floor(Number(query.top ?? 10)) || 0);
+
   const cities = cityOrder
     .filter((city) => drivers.some((driver) => driver.city === city))
     .map((city) => {
-      // Ranking por corridas finalizadas, da maior para a menor; TSH desempata.
-      const cityDrivers = drivers
-        .filter((driver) => driver.city === city)
-        .sort((a, b) => b.orders - a.orders || b.tsh - a.tsh);
+      const cityDrivers = drivers.filter((driver) => driver.city === city);
+      const worst = {
+        orders: cityDrivers.reduce((most, driver) => Math.max(most, driver.orders || 0), 0),
+        caa: cityDrivers.reduce((most, driver) => Math.max(most, driver.caa || 0), 0),
+        ot: cityDrivers.reduce((most, driver) => Math.max(most, driver.ot || 0), 0),
+      };
+      const scored = cityDrivers.map((driver) => ({ ...driver, score: driverScore(driver, worst) }));
+
+      // CAA e OT sao erro: ordenar "melhor primeiro" ali e do menor para o maior.
+      const invertido = sort === "caa" || sort === "ot";
+      const valor = (driver) => (invertido ? -(driver[sort] || 0) : driver[sort] || 0);
+      // A nota desempata qualquer criterio; corridas desempatam a nota.
+      const byChosen = (a, b) => valor(b) - valor(a) || b.score - a.score || b.orders - a.orders;
+      const ranked = scored.filter((driver) => driver.orders >= minOrders).sort(byChosen);
+      const abaixo = scored.filter((driver) => driver.orders < minOrders).sort((a, b) => b.orders - a.orders);
+      const cut = top > 0 ? top : ranked.length;
+
       return {
         city,
-        top: cityDrivers.slice(0, 10),
-        rest: cityDrivers.slice(10),
+        top: ranked.slice(0, cut),
+        // Quem nao bateu o minimo continua listado, so nao disputa o ranking.
+        rest: [...ranked.slice(cut), ...abaixo],
+        drivers: scored.length,
+        ranked: ranked.length,
+        belowMin: abaixo.length,
       };
     });
 
-  return { cities };
+  return { cities, sort, minOrders, top, sorts: DRIVER_SORTS, weights: DRIVER_SCORE_WEIGHTS };
+}
+
+// ── Excel do ranking ─────────────────────────────────────────────────────────
+// Uma aba por cidade, na ordem escolhida na tela e com a quantidade pedida.
+const DAILY_EXPORT_HEADER = ["#", "ID", "CPF", "ENTREGADOR", "HOTZONE", "MODAL", "CORRIDAS", "TSH", "AR", "CAA", "OT", "NOTA"];
+const DAILY_EXPORT_WIDTHS = [5, 18, 15, 34, 18, 13, 11, 10, 10, 10, 10, 10];
+
+function dailyResultWorkbook(result) {
+  const workbook = XLSX.utils.book_new();
+
+  for (const group of result.cities) {
+    const body = group.top.map((driver, index) => [
+      index + 1,
+      driver.id,
+      driver.cpf,
+      driver.name,
+      driver.hotzone || "",
+      driver.vehicle || "",
+      driver.orders,
+      driver.tsh,
+      driver.ar,
+      driver.caa,
+      driver.ot,
+      driver.score,
+    ]);
+
+    const sheet = XLSX.utils.aoa_to_sheet([DAILY_EXPORT_HEADER, ...body]);
+    sheet["!cols"] = DAILY_EXPORT_WIDTHS.map((width) => ({ wch: width }));
+
+    // TSH, AR, CAA, OT e NOTA sao fracoes: sem o formato o Excel mostra 0,92.
+    for (let line = 0; line < body.length; line += 1) {
+      for (const column of [7, 8, 9, 10, 11]) {
+        const cell = sheet[XLSX.utils.encode_cell({ r: line + 1, c: column })];
+        if (cell) cell.z = "0.0%";
+      }
+    }
+
+    XLSX.utils.book_append_sheet(workbook, sheet, group.city.slice(0, 31));
+  }
+
+  if (!result.cities.length) {
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([DAILY_EXPORT_HEADER]), "Sem dados");
+  }
+
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 }
 
 function filterFinanceRows(query) {
@@ -2079,9 +2479,8 @@ app.get("/api/meta", (req, res) => {
   });
 });
 
-app.post("/api/reload", supabase.authorize("atualizar_bi", "atualizar_bi_financeiro"), async (_req, res) => {
+app.post("/api/reload", supabase.authorize("atualizar_bi", "atualizar_bi_financeiro"), (_req, res) => {
   reloadData();
-  await refreshSignupSheet();
   res.json({
     ok: true,
     rowCount: data.length,
@@ -2153,11 +2552,78 @@ app.get("/api/signups/people", supabase.authorize("cadastro", "kpis"), (req, res
   res.json({ people: signupPeople(req.query) });
 });
 
-// Botao "Atualizar cadastros": busca a guia do Google na hora, sem esperar o
-// refresh automatico.
-app.post("/api/signups/refresh", supabase.authorize("cadastro", "kpis"), async (req, res) => {
-  await refreshSignupSheet();
-  res.json(buildSignups(req.query));
+// Cadastrar, corrigir e apagar direto na tela. Toda resposta devolve o painel
+// inteiro ja recalculado, para a tela nao precisar de uma segunda chamada.
+app.post("/api/signups", supabase.authorize("cadastro"), (req, res) => {
+  const built = buildSignupRecord(req.body);
+  if (built.error) return res.status(400).json({ error: built.error });
+
+  const store = readSignupStore();
+  if (store.some((item) => signupIdentity(item) === signupIdentity(built.record))) {
+    return res.status(409).json({ error: "Esse entregador ja esta cadastrado nessa data." });
+  }
+
+  store.push(built.record);
+  saveSignupStore(store);
+  res.json({ ...signupResponse(req.query), savedKey: built.record.key });
+});
+
+app.put("/api/signups/:key", supabase.authorize("cadastro"), (req, res) => {
+  const store = readSignupStore();
+  const index = store.findIndex((item) => item.key === req.params.key);
+  if (index < 0) return res.status(404).json({ error: "Cadastro nao encontrado na base." });
+
+  const built = buildSignupRecord(req.body, store[index]);
+  if (built.error) return res.status(400).json({ error: built.error });
+
+  const clash = store.some((item, position) => position !== index && signupIdentity(item) === signupIdentity(built.record));
+  if (clash) return res.status(409).json({ error: "Esse entregador ja esta cadastrado nessa data." });
+
+  store[index] = built.record;
+  saveSignupStore(store);
+  res.json({ ...signupResponse(req.query), savedKey: built.record.key });
+});
+
+app.delete("/api/signups/:key", supabase.authorize("cadastro"), (req, res) => {
+  const store = readSignupStore();
+  const rest = store.filter((item) => item.key !== req.params.key);
+  if (rest.length === store.length) return res.status(404).json({ error: "Cadastro nao encontrado na base." });
+
+  saveSignupStore(rest);
+  res.json(signupResponse(req.query));
+});
+
+// A grade editavel: a planilha do Google passou a morar aqui dentro.
+app.get("/api/signups/sheet", supabase.authorize("cadastro", "kpis"), (req, res) => {
+  res.json(buildSignupSheet(req.query));
+});
+
+// Trazer a planilha inteira de uma vez: cola e importa. Linha que ja existe
+// (mesma pessoa no mesmo dia) e ignorada, entao colar duas vezes nao duplica.
+app.post("/api/signups/paste", supabase.authorize("cadastro"), (req, res) => {
+  const parsed = parsePastedSignups(req.body.text, req.body.city);
+  if (!parsed.length) return res.status(400).json({ error: "Nada para importar: cole as linhas da planilha." });
+
+  const store = readSignupStore();
+  const seen = new Set(store.map(signupIdentity));
+  let created = 0;
+  let repeated = 0;
+  let ignored = 0;
+
+  for (const raw of parsed) {
+    const record = signupRecordFromRaw(raw);
+    if (!record) { ignored += 1; continue; }
+
+    const identity = signupIdentity(record);
+    if (seen.has(identity)) { repeated += 1; continue; }
+
+    seen.add(identity);
+    store.push(record);
+    created += 1;
+  }
+
+  saveSignupStore(store);
+  res.json({ created, repeated, ignored, sheet: buildSignupSheet(req.query) });
 });
 
 app.get("/api/finance", supabase.authorize("financeiro"), (req, res) => {
@@ -2213,7 +2679,16 @@ app.delete("/api/promotions", supabase.authorize("promocoes"), (req, res) => {
 
 app.get("/api/daily-result", supabase.authorize("kpis", "cadastro"), (req, res) => {
   const rows = filterRows(req.query);
-  res.json(buildDailyResult(rows));
+  res.json(buildDailyResult(rows, req.query));
+});
+
+app.get("/api/daily-result/export", supabase.authorize("kpis", "cadastro"), (req, res) => {
+  const result = buildDailyResult(filterRows(req.query), req.query);
+  const stamp = isoDate(new Date());
+
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", `attachment; filename="melhores-entregadores-${stamp}.xlsx"`);
+  res.send(dailyResultWorkbook(result));
 });
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -2383,11 +2858,6 @@ app.listen(PORT, () => {
   console.log(`${data.length} linhas carregadas de ${walkXlsx(BI_DIR).length} arquivos .xlsx`);
   watchBiDir();
 
-  refreshSignupSheet().then(() => {
-    console.log(`Cadastros: ${signupData.length} linhas (${signupStatus.origin}${signupStatus.error ? ` - ${signupStatus.error}` : ""}).`);
-  });
-
-  if (SIGNUP_REFRESH_MINUTES > 0) {
-    setInterval(refreshSignupSheet, SIGNUP_REFRESH_MINUTES * 60000).unref();
-  }
+  const seeded = signupStatus.seeded ? ` - ${signupStatus.seeded} vindos da carga inicial` : "";
+  console.log(`Cadastros: ${signupData.length} linhas na base do sistema (${signupStatus.file})${seeded}.`);
 });
